@@ -53,7 +53,7 @@ export class SpectrumAnalyzer {
 
     this.analyserNode = this.audioContext.createAnalyser();
     this.analyserNode.fftSize = FFT_SIZE;
-    this.analyserNode.smoothingTimeConstant = 0.3;
+    this.analyserNode.smoothingTimeConstant = 0;
 
     // Restore calibration data
     this.noiseBuffer = existingNoiseBuffer;
@@ -101,7 +101,7 @@ export class SpectrumAnalyzer {
 
   async recordSegment(duration = 3) {
     const framesPerBuffer = FFT_SIZE;
-    const totalFrames = Math.ceil((duration * SAMPLE_RATE) / framesPerBuffer);
+    const totalFrames = Math.ceil((duration * this.audioContext.sampleRate) / framesPerBuffer);
     const frequencyData = new Float32Array(FFT_SIZE / 2);
     let frameCount = 0;
     let scheduledFrameTime = 0; // tracks expected time of next frame
@@ -121,26 +121,29 @@ export class SpectrumAnalyzer {
         this.analyserNode.getFloatFrequencyData(data);
 
         for (let i = 0; i < data.length; i++) {
-          frequencyData[i] += data[i];
+          // Convert dB to linear power and accumulate
+          frequencyData[i] += Math.pow(10, data[i] / 10);
         }
 
         frameCount++;
 
         if (frameCount < totalFrames) {
           // Advance expected time by one buffer duration
-          scheduledFrameTime = now + (framesPerBuffer / SAMPLE_RATE);
+          scheduledFrameTime = now + (framesPerBuffer / this.audioContext.sampleRate);
           scheduleNext(now);
         } else {
           const result = new Float32Array(FFT_SIZE / 2);
           for (let i = 0; i < result.length; i++) {
-            result[i] = frequencyData[i] / frameCount;
+            // Average in linear power, convert back to dB
+            const avgPower = frequencyData[i] / frameCount;
+            result[i] = 10 * Math.log10(avgPower);
           }
           resolve(result);
         }
       };
 
       // Bootstrap: capture start time and begin looping
-      scheduledFrameTime = this.audioContext.currentTime + (framesPerBuffer / SAMPLE_RATE);
+      scheduledFrameTime = this.audioContext.currentTime + (framesPerBuffer / this.audioContext.sampleRate);
       requestAnimationFrame(processFrame);
     });
   }
@@ -183,7 +186,7 @@ export class SpectrumAnalyzer {
     // Interpolate the generic curve to match our FFT bins.
     // We use log-frequency interpolation because audio perception is logarithmic.
     const binCount = FFT_SIZE / 2;
-    const binWidth = SAMPLE_RATE / FFT_SIZE;
+    const binWidth = this.audioContext.sampleRate / this.analyserNode.fftSize;
     this.micCorrectionCurve = new Float32Array(binCount);
 
     for (let i = 0; i < binCount; i++) {
@@ -292,7 +295,7 @@ export class SpectrumAnalyzer {
 
   getLinearFrequencyLabels() {
     const labels = [];
-    const binWidth = SAMPLE_RATE / FFT_SIZE;
+    const binWidth = this.audioContext.sampleRate / this.analyserNode.fftSize;
     for (let i = 0; i < FFT_SIZE / 2; i++) {
       labels.push(i * binWidth);
     }

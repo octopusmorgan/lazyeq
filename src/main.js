@@ -8,6 +8,7 @@ import { SpectrumAnalyzer } from "./analyzer.js";
 import { RemoteMicHost } from "./webrtc/remoteMic.js";
 import { generateQRDataUrl } from "./webrtc/qrCode.js";
 import { resolveSignalingUrl, isPrivateOrLocalHostname } from "./webrtc/networkDiscovery.js";
+import { SAMPLE_RATE } from "./constants.js";
 import {
   exportWavelet,
   exportEqMac,
@@ -174,7 +175,7 @@ let audioContext = null;
 function initAudioContext() {
   if (!audioContext) {
     audioContext = new (window.AudioContext || window.webkitAudioContext)({
-      sampleRate: 44100
+      sampleRate: SAMPLE_RATE
     });
   }
   return audioContext;
@@ -710,7 +711,7 @@ function renderLiveSweep() {
   for (let i = 0; i < 128; i++) {
     const logFreq = logMin + (i / 128) * (logMax - logMin);
     const freq = Math.pow(10, logFreq);
-    const binIdx = Math.floor((freq / 22050) * data.length);
+    const binIdx = Math.floor((freq / (analyzer.audioContext.sampleRate / 2)) * data.length);
     const x = (i / 128) * width;
     const db = data[Math.min(binIdx, data.length - 1)];
     const y = Math.max(0, Math.min(height, ((db + 100) / 100) * height));
