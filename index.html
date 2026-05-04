@@ -29,7 +29,51 @@
             <option value="">Loading devices...</option>
           </select>
         </div>
-        
+
+          <div id="remote-mic-panel" class="remote-mic-panel" style="margin-top: 1rem;">
+          <div class="separator" style="display:flex;align-items:center;gap:0.5rem;color:#4a4a5a;font-size:0.8rem;margin:0.75rem 0;">
+            <span style="flex:1;height:1px;background:rgba(255,255,255,0.06);"></span>
+            or use another phone as mic
+            <span style="flex:1;height:1px;background:rgba(255,255,255,0.06);"></span>
+          </div>
+          <div id="remote-mic-config" style="margin-bottom:0.75rem;">
+            <label style="display:block;font-size:0.75rem;color:#6a6a7a;margin-bottom:0.25rem;">Signaling Server (auto-detected)</label>
+            <input
+              type="text"
+              id="remote-mic-server"
+              value=""
+              placeholder="ws://192.168.1.42:3001"
+              style="width:100%;padding:0.5rem 0.75rem;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:0.375rem;color:#e0e0e8;font-size:0.85rem;margin-bottom:0.5rem;"
+            />
+            <label style="display:block;font-size:0.75rem;color:#6a6a7a;margin-bottom:0.25rem;">Public Page URL (for QR, optional)</label>
+            <input
+              type="text"
+              id="remote-mic-public-url"
+              value=""
+              placeholder="https://... (only if using a tunnel)"
+              style="width:100%;padding:0.5rem 0.75rem;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:0.375rem;color:#e0e0e8;font-size:0.85rem;"
+            />
+            <p id="remote-mic-server-hint" style="font-size:0.7rem;color:#4a4a5a;margin-top:0.25rem;">Auto-detected LAN address. <strong>Recommended:</strong> Use <code>localtunnel</code> or <code>ngrok</code> for HTTPS (no cert install needed on phone). See README.</p>
+          </div>
+          <button id="btn-remote-mic" class="btn-secondary" style="width: 100%;">
+            📱 Use Remote Mic
+          </button>
+          <div id="remote-mic-status" class="status" style="margin-top:0.5rem;"></div>
+          <div id="remote-mic-connected" class="hidden" style="margin-top:0.75rem;padding:0.75rem;background:rgba(0,245,212,0.08);border:1px solid rgba(0,245,212,0.2);border-radius:0.5rem;text-align:center;">
+            <div style="display:flex;align-items:center;justify-content:center;gap:0.5rem;margin-bottom:0.25rem;">
+              <span style="width:8px;height:8px;border-radius:50%;background:#00f5d4;box-shadow:0 0 8px #00f5d4;display:inline-block;"></span>
+              <strong style="color:#00f5d4;font-size:0.9rem;">Remote microphone connected</strong>
+            </div>
+            <p style="font-size:0.75rem;color:#6a6a7a;margin:0;">Audio is being received from the phone. The PC will play the sweep through your speakers.</p>
+          </div>
+          <div id="remote-mic-code" class="hidden" style="margin-top:0.75rem;text-align:center;">
+            <img id="remote-mic-qr" alt="Scan to connect remote mic" style="display:block;width:160px;height:160px;margin:0 auto 0.75rem;border-radius:0.5rem;border:1px solid rgba(0,245,212,0.2);background:#0c0c14;"/>
+            <p style="font-size:0.8rem;color:#6a6a7a;margin-bottom:0.25rem;">Scan QR or open this URL on your phone:</p>
+            <code id="remote-mic-url" style="display:block;background:rgba(0,0,0,0.3);padding:0.5rem;border-radius:0.375rem;font-size:0.75rem;word-break:break-all;color:#00f5d4;"></code>
+            <p style="font-size:0.75rem;color:#4a4a5a;margin-top:0.5rem;">Or enter code <strong id="remote-code-digits" style="color:#ffc857;font-size:1rem;">----</strong> at the remote page.</p>
+          </div>
+        </div>
+
         <button id="btn-refresh-devices" class="btn-secondary" style="width: 100%;">
           ↻ Refresh Devices
         </button>
@@ -42,10 +86,20 @@
           <span class="step-indicator">2</span>
           <h2>Ambient Noise</h2>
         </div>
+        <div id="calibration-step-indicator" class="step-progress">
+          <div class="step" id="cal-step-1"><span class="step-icon"></span> Noise Floor</div>
+          <div class="step-connector" id="cal-conn-1"></div>
+          <div class="step" id="cal-step-2"><span class="step-icon"></span> Sweep</div>
+          <div class="step-connector" id="cal-conn-2"></div>
+          <div class="step" id="cal-step-3"><span class="step-icon"></span> Export</div>
+        </div>
         <p>Keep quiet for 5 seconds while we measure background noise.</p>
         <button id="btn-noise" class="btn-primary" style="width: 100%;">
           Start Calibration
         </button>
+        <div class="progress-bar-container hidden" id="noise-progress-container">
+          <div class="progress-bar" id="noise-progress-bar"></div>
+        </div>
         <p id="status-noise" class="status"></p>
       </section>
 
@@ -55,7 +109,16 @@
           <span class="step-indicator">3</span>
           <h2>Frequency Scan</h2>
         </div>
-        <p>Connect your speaker via Bluetooth. We'll play a sweep (20Hz–20kHz) and capture the response.</p>
+        <p id="sweep-instructions">Connect your speaker via Bluetooth. We'll play a sweep (20Hz–20kHz) and capture the response.</p>
+        <div class="sweep-options">
+          <label for="sweep-count">Averages:</label>
+          <select id="sweep-count">
+            <option value="1">1 (fast)</option>
+            <option value="2" selected>2 (recommended)</option>
+            <option value="3">3 (best)</option>
+          </select>
+          <span class="hint">Multiple sweeps reduce room mode variation</span>
+        </div>
         <div class="controls-row">
           <button id="btn-sweep" class="btn-primary" disabled>
             ▶ Play Sweep
@@ -65,20 +128,10 @@
           </button>
         </div>
         <canvas id="canvas-live" class="canvas-live"></canvas>
-        <p id="status-sweep" class="status"></p>
-      </section>
-
-      <!-- Step 2b: Room Walk Mode -->
-      <section id="step-room-walk" class="card">
-        <div class="card-header">
-          <span class="step-indicator">↻</span>
-          <h2>Room Walk Mode</h2>
+        <div class="progress-bar-container hidden" id="sweep-progress-container">
+          <div class="progress-bar" id="sweep-progress-bar"></div>
         </div>
-        <p>Walk around your room while we capture 15 measurements for spatial averaging.</p>
-        <button id="btn-roomwalk" class="btn-secondary" style="width: 100%;" disabled>
-          🚶 Measure Multiple Spots
-        </button>
-        <p id="status-room-walk" class="status"></p>
+        <p id="status-sweep" class="status"></p>
       </section>
 
       <!-- Step 3: Results -->
@@ -135,21 +188,6 @@
     <footer>
       <p>Tip: Use your phone's microphone — not the speaker's mic. Keep the room quiet.</p>
     </footer>
-  </div>
-
-  <!-- Room Walk Overlay -->
-  <div id="room-walk-overlay" class="overlay hidden">
-    <div class="overlay-content">
-      <h2>🚶 Walk Around</h2>
-      <p>Caminá lentamente por la habitación</p>
-      <div class="progress-bar">
-        <div id="roomwalk-progress" class="progress-fill"></div>
-      </div>
-      <p class="roomwalk-counter" id="roomwalk-counter">Mediciones: 0/15</p>
-      <button id="btn-roomwalk-stop" class="btn-stop" style="width: 100%;">
-        Detener
-      </button>
-    </div>
   </div>
 
   <script type="module" src="./src/main.js"></script>
