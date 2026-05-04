@@ -104,10 +104,10 @@ export function exportWavelet(gains) {
   return `GraphicEQ: ${parts.join("; ")}`;
 }
 
-export function exportEqMac(gains) {
+export function exportEqMac(gains, visData = null) {
   const bands = EQMAC_BANDS;
   const gainsArray = (gains && gains.length > 0) ? gains : [];
-  
+
   if (gainsArray.length === 0) {
     return JSON.stringify({
       name: "lazyEq Preset",
@@ -123,10 +123,26 @@ export function exportEqMac(gains) {
   const avgGain = sumGain / gainsArray.length;
   const preampValue = -avgGain;
 
-  const step = gainsArray.length / bands.length;
-  const filters = bands.map((freq, idx) => {
-    const gainIdx = Math.min(Math.floor(idx * step), gainsArray.length - 1);
-    const filterGain = gainsArray.length > 0 ? gainsArray[Math.max(0, gainIdx)] : 0;
+  // Frequency-based interpolation when visData is available
+  function getGainAtFreq(targetFreq) {
+    if (!visData || visData.length === 0) return 0;
+    if (visData.length === 1) return gainsArray[0] || 0;
+
+    for (let i = 0; i < visData.length - 1; i++) {
+      const f1 = visData[i].x;
+      const f2 = visData[i + 1].x;
+      if (targetFreq <= f1) return gainsArray[i] || 0;
+      if (targetFreq >= f2) continue;
+      if (targetFreq >= f1 && targetFreq <= f2) {
+        const ratio = (targetFreq - f1) / (f2 - f1);
+        return (gainsArray[i] || 0) + ((gainsArray[i + 1] || 0) - (gainsArray[i] || 0)) * ratio;
+      }
+    }
+    return gainsArray[gainsArray.length - 1] || 0;
+  }
+
+  const filters = bands.map((freq) => {
+    const filterGain = visData ? getGainAtFreq(freq) : gainsArray[Math.min(Math.floor((freq / 20000) * (gainsArray.length - 1)), gainsArray.length - 1)];
     const adjustedGain = filterGain + preampValue;
     return { type: "PK", freq: freq, gain: adjustedGain.toFixed(1), Q: 1.0 };
   });
@@ -159,7 +175,7 @@ export function generateVisualizationData(spectrum, frequencyLabels, numPoints =
     }
     const binIdx = (freq - frequencyLabels[lo]) <= (frequencyLabels[hi] - freq) ? lo : hi;
 
-    points.push({ x: freq, y: spectrum[binIdx] || -100 });
+    points.push({ x: freq, y: spectrum[binIdx] ?? -100 });
   }
   return points;
 }

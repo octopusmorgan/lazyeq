@@ -2,7 +2,6 @@
  * Mic recorder + FFT spectrum analyzer.
  */
 
-import { SineSweepSource } from "./sineSweep.js";
 import { SAMPLE_RATE, FFT_SIZE, MIC_REFERENCE_OFFSET } from "./constants.js";
 
 export class SpectrumAnalyzer {
@@ -15,9 +14,32 @@ export class SpectrumAnalyzer {
     this.micCorrectionCurve = null;
   }
 
-  async init(deviceId = null, existingContext = null) {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error("getUserMedia not supported");
+  /**
+   * Initialize the analyzer.
+   *
+   * Supports three call signatures for backward compatibility:
+   *   1. init()                          — default local mic
+   *   2. init(deviceId, existingContext) — legacy string call
+   *   3. init({ deviceId, existingContext, remoteStream }) — explicit options object
+   *   4. init(mediaStream, existingContext) — pass a MediaStream directly as remote mic
+   */
+  async init(arg1 = null, arg2 = null) {
+    let deviceId = null;
+    let remoteStream = null;
+    let existingContext = null;
+
+    // Duck-type MediaStream: some browsers/contexts fail instanceof
+    const isMediaStream = arg1 && typeof arg1 === "object" && typeof arg1.getTracks === "function";
+    if (isMediaStream) {
+      remoteStream = arg1;
+      existingContext = arg2;
+    } else if (arg1 && typeof arg1 === "object") {
+      deviceId = arg1.deviceId ?? null;
+      remoteStream = arg1.remoteStream ?? null;
+      existingContext = arg1.existingContext ?? arg2;
+    } else {
+      deviceId = arg1;
+      existingContext = arg2;
     }
 
     // Use existing context or create new one
@@ -25,39 +47,50 @@ export class SpectrumAnalyzer {
       sampleRate: SAMPLE_RATE
     });
 
-    // Preserve existing noiseBuffer (don't overwrite calibration data)
+    // Preserve existing calibration data across re-initializations
     const existingNoiseBuffer = this.noiseBuffer;
+    const existingMicCorrectionCurve = this.micCorrectionCurve;
 
     this.analyserNode = this.audioContext.createAnalyser();
     this.analyserNode.fftSize = FFT_SIZE;
     this.analyserNode.smoothingTimeConstant = 0.3;
 
-    // Restore noiseBuffer after reinitializing
+    // Restore calibration data
     this.noiseBuffer = existingNoiseBuffer;
+    this.micCorrectionCurve = existingMicCorrectionCurve;
 
-    try {
-      const constraints = {
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false
+    if (remoteStream) {
+      // Remote mic mode: stream comes from WebRTC (no local getUserMedia needed)
+      this.stream = remoteStream;
+      if (import.meta.env.DEV) console.log("Analyzer using REMOTE stream:", remoteStream.id, "tracks:", remoteStream.getAudioTracks().length);
+    } else {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("getUserMedia not supported");
+      }
+
+      try {
+        const constraints = {
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false
+          }
+        };
+
+        if (deviceId) {
+          constraints.audio.deviceId = { exact: deviceId };
+          if (import.meta.env.DEV) console.log("Using selected mic device:", deviceId);
         }
-      };
-      
-      // Use selected device if provided
-      if (deviceId) {
-        constraints.audio.deviceId = { exact: deviceId };
-        if (import.meta.env.DEV) console.log("Using selected mic device:", deviceId);
+
+        this.stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err) {
+        if (err.name === "NotAllowedError") {
+          throw new Error("Mic permission denied");
+        } else if (err.name === "NotFoundError") {
+          throw new Error("No microphone found");
+        }
+        throw err;
       }
-      
-      this.stream = await navigator.mediaDevices.getUserMedia(constraints);
-    } catch (err) {
-      if (err.name === "NotAllowedError") {
-        throw new Error("Mic permission denied");
-      } else if (err.name === "NotFoundError") {
-        throw new Error("No microphone found");
-      }
-      throw err;
     }
 
     this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
@@ -79,7 +112,7 @@ export class SpectrumAnalyzer {
         // Using requestAnimationFrame keeps polling alive even when
         // backgrounded on desktop; audioContext.currentTime is never throttled.
         const delay = Math.max(0, (scheduledFrameTime - now));
-        setTimeout(() => requestAnimationFrame(processFrame), delay);
+        setTimeout(() => requestAnimationFrame(processFrame), delay * 1000);
       };
 
       const processFrame = (rafTimestamp) => {
@@ -117,76 +150,93 @@ export class SpectrumAnalyzer {
     return this.noiseBuffer;
   }
 
+  /**
+   * Build a generic microphone correction curve for typical phone MEMS microphones.
+   *
+   * NOTE: This is a GENERIC approximation based on averaged measurements from
+   * common smartphone MEMS capsules. It is NOT a per-device calibration.
+   * For accurate results, a proper per-device measurement with a calibrated
+   * reference microphone would be needed.
+   *
+   * The curve captures the typical roll-off and resonances of phone mics:
+   * - Flat response up to ~2kHz (reference point at 1kHz = 0dB)
+   * - Slight presence bump around 4kHz
+   * - Gradual high-frequency roll-off above 8kHz (physical limitation of small capsules)
+   */
   async calibrateMicrophone() {
-    // Self-calibration: play test tone through phone speaker, record with phone mic
-    // The microphone is already connected to this.analyserNode from init()
-    // We just need to play the sweep and capture from the analyser
-    try {
-      // Create test sweep (1 second)
-      const sweep = new SineSweepSource(this.audioContext);
-      sweep.createBuffer(1);
-      sweep.setVolume(0.5);
+    // Generic phone mic correction curve (frequency in Hz → dB correction)
+    // These values represent the TYPICAL deviation from flat response.
+    // Positive dB = mic over-represents that frequency (we subtract it later).
+    // Negative dB = mic under-represents that frequency (we add it back later).
+    const GENERIC_PHONE_MIC_CORRECTION = [
+      { freq: 1000,  db: 0 },    // Reference point
+      { freq: 2000,  db: 0 },    // Still flat
+      { freq: 4000,  db: 0.5 },  // Slight presence bump
+      { freq: 6000,  db: 0 },    // Back to flat
+      { freq: 8000,  db: -1.0 }, // Beginning of HF roll-off
+      { freq: 10000, db: -2.0 }, // Moderate roll-off
+      { freq: 12500, db: -3.0 }, // Increasing roll-off
+      { freq: 16000, db: -4.0 }, // Significant roll-off
+      { freq: 20000, db: -6.0 }, // Near Nyquist limit
+    ];
 
-      // Connect sweep to speakers (destination)
-      sweep.gainNode.connect(this.audioContext.destination);
+    // Interpolate the generic curve to match our FFT bins.
+    // We use log-frequency interpolation because audio perception is logarithmic.
+    const binCount = FFT_SIZE / 2;
+    const binWidth = SAMPLE_RATE / FFT_SIZE;
+    this.micCorrectionCurve = new Float32Array(binCount);
 
-      // --- FIX: Start the sweep before recording ---
-      sweep.start();
-
-      // Record from existing analyser (which is connected to mic via this.stream)
-      // Just capture during the sweep
-      const recordedSpectrum = await this.recordSegment(1);
-
-      sweep.stop();
-
-      // Calculate correction curve
-      // The recorded spectrum is the COMBINED response of: speaker + mic + room
-      // We want just the mic response, so we subtract an assumed flat speaker response
-      // For simplicity, we subtract the average level to "flatten" the response
-      // This gives us the mic's fingerprint
-      if (recordedSpectrum && recordedSpectrum.length > 0) {
-        // Check if we captured actual signal (not just silence)
-        let maxDB = -Infinity;
-        for (let i = 0; i < recordedSpectrum.length; i++) {
-          if (recordedSpectrum[i] > maxDB) maxDB = recordedSpectrum[i];
-        }
-
-        // If max is below -80dB, calibration failed (mic didn't capture sweep)
-        if (maxDB < -80) {
-          console.warn("Mic calibration: weak signal detected, skipping correction");
-          this.micCorrectionCurve = null;
-          return true;
-        }
-
-        // Calculate average level (approximate "flat" response of speaker)
-        let sum = 0;
-        let count = 0;
-        for (let i = 0; i < recordedSpectrum.length; i++) {
-          if (recordedSpectrum[i] > -100) { // Ignore silent bins
-            sum += recordedSpectrum[i];
-            count++;
-          }
-        }
-        const avgLevel = count > 0 ? sum / count : -50;
-
-        // Correction = what we measured (mic's impression of a "flat" signal)
-        // Store this as the correction to apply later
-        this.micCorrectionCurve = new Float32Array(recordedSpectrum.length);
-        for (let i = 0; i < recordedSpectrum.length; i++) {
-          // Subtract average to normalize, result is how mic colors sound
-          this.micCorrectionCurve[i] = recordedSpectrum[i] - avgLevel;
-        }
-        if (import.meta.env.DEV) {
-          console.log("Mic self-calibration complete, avg level:", avgLevel.toFixed(1));
-        }
-      }
-
-      return true;
-    } catch (err) {
-      console.error("Mic calibration failed:", err);
-      this.micCorrectionCurve = null;
-      return false;
+    for (let i = 0; i < binCount; i++) {
+      const freq = i * binWidth;
+      this.micCorrectionCurve[i] = this._interpolateLogFrequency(
+        GENERIC_PHONE_MIC_CORRECTION,
+        freq
+      );
     }
+
+    if (import.meta.env.DEV) {
+      console.log("Mic calibration: generic phone mic curve applied (" + binCount + " bins)");
+    }
+
+    return true;
+  }
+
+  /**
+   * Interpolate a correction value at a given frequency using log-frequency interpolation.
+   * Extrapolates flat (0 dB slope) beyond the defined range.
+   *
+   * @param {Array<{freq: number, db: number}>} curve - Breakpoint definition
+   * @param {number} targetFreq - Frequency to interpolate
+   * @returns {number} Interpolated dB correction value
+   */
+  _interpolateLogFrequency(curve, targetFreq) {
+    // Below the first breakpoint: use the first value (flat extrapolation)
+    if (targetFreq <= curve[0].freq) {
+      return curve[0].db;
+    }
+    // Above the last breakpoint: use the last value (flat extrapolation)
+    if (targetFreq >= curve[curve.length - 1].freq) {
+      return curve[curve.length - 1].db;
+    }
+
+    // Find the two surrounding breakpoints
+    let lower = curve[0];
+    let upper = curve[1];
+    for (let i = 0; i < curve.length - 1; i++) {
+      if (targetFreq >= curve[i].freq && targetFreq <= curve[i + 1].freq) {
+        lower = curve[i];
+        upper = curve[i + 1];
+        break;
+      }
+    }
+
+    // Linear interpolation in log-frequency space
+    const logLower = Math.log10(lower.freq);
+    const logUpper = Math.log10(upper.freq);
+    const logTarget = Math.log10(targetFreq);
+
+    const ratio = (logTarget - logLower) / (logUpper - logLower);
+    return lower.db + ratio * (upper.db - lower.db);
   }
 
   async captureSpeaker(duration = 5) {

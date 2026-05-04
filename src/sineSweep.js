@@ -12,6 +12,7 @@ export class SineSweepSource {
     this.sourceNode = null;
     this.gainNode = audioContext.createGain();
     this.gainNode.gain.value = 0.8;
+    this.gainNode.connect(this.audioContext.destination);
     this.duration = 8; // Professional standard: 8 seconds
   }
 
@@ -27,7 +28,7 @@ export class SineSweepSource {
     const data = buffer.getChannelData(0);
 
     const f0 = 20;       // Start frequency
-    const f1 = 20000;    // End frequency
+    const f1 = 16000;    // End frequency (16kHz covers useful EQ range, avoids BT speaker compression)
     const T = duration;
     const logRatio = Math.log(f1 / f0);
 
@@ -36,11 +37,17 @@ export class SineSweepSource {
       // Calculate phase for logarithmic sweep
       const phase = (2 * Math.PI * f0 * T / logRatio) * (Math.exp(logRatio * t / T) - 1);
       
-      // Apply a small fade-in and fade-out to avoid clicks
+      // Smooth fade-in (10ms linear) and fade-out (200ms exponential) to avoid clicks and speaker compression
       let amplitude = 1.0;
-      const fadeSize = 0.01 * sampleCount;
-      if (i < fadeSize) amplitude = i / fadeSize;
-      if (i > sampleCount - fadeSize) amplitude = (sampleCount - i) / fadeSize;
+      const fadeInSamples = Math.floor(0.01 * this.audioContext.sampleRate); // 10ms
+      const fadeOutSamples = Math.floor(0.2 * this.audioContext.sampleRate); // 200ms
+      if (i < fadeInSamples) {
+        amplitude = i / fadeInSamples;
+      } else if (i > sampleCount - fadeOutSamples) {
+        // Exponential fade-out: smooth ramp that avoids triggering speaker limiters
+        const fadeProgress = (sampleCount - i) / fadeOutSamples;
+        amplitude = Math.pow(fadeProgress, 3); // Cubic fade for extra smoothness
+      }
 
       data[i] = Math.sin(phase) * amplitude;
     }
@@ -61,7 +68,6 @@ export class SineSweepSource {
     this.sourceNode = this.audioContext.createBufferSource();
     this.sourceNode.buffer = this.buffer;
     this.sourceNode.connect(this.gainNode);
-    this.gainNode.connect(this.audioContext.destination);
     
     if (import.meta.env.DEV) {
       console.log("Sweep STARTING - playing", this.duration, "seconds");
