@@ -3,12 +3,10 @@
  */
 
 const i18nStrings = {
-  // English
   'en-US': {
     'btn.Noise': 'Calibrate Noise',
     'btn.Sweep': 'Start Sweep',
     'btn.Stop': 'Stop',
-    'btn.RoomWalk': 'Room Walk',
     'btn.ExportWavelet': 'Export Wavelet',
     'btn.ExportEqMac': 'Export EQ Mac',
     'status.Recording': 'Recording...',
@@ -23,29 +21,6 @@ const i18nStrings = {
     'noMics': 'No microphones found',
     'desktopMic': 'Desktop Mic (Recommended)',
     'bluetoothMic': 'Bluetooth (Avoid)',
-    'freq.Hz': 'Hz',
-    'freq.kHz': 'kHz'
-  },
-  // Spanish
-  'es-AR': {
-    'btn.Noise': 'Calibrar Ruido',
-    'btn.Sweep': 'Iniciar Sweep',
-    'btn.Stop': 'Detener',
-    'btn.RoomWalk': 'Recorrido',
-    'btn.ExportWavelet': 'Exportar Wavelet',
-    'btn.ExportEqMac': 'Exportar EQ Mac',
-    'status.Recording': 'Grabando...',
-    'status.Calibrating': 'Calibrando micrófono...',
-    'status.SweepStarted': 'Sweep iniciado',
-    'status.SweepFinished': 'Sweep terminado',
-    'status.Processing': 'Procesando...',
-    'status.ExportDone': 'Exportación completa',
-    'status.Error': 'Error',
-    'label.MicSelect': 'Micrófono',
-    'label.FoundMics': '{count} micrófono(s) encontrado(s)',
-    'noMics': 'No se encontraron micrófonos',
-    'desktopMic': 'Micrófono (Recomendado)',
-    'bluetoothMic': 'Bluetooth (Evitar)',
     'freq.Hz': 'Hz',
     'freq.kHz': 'kHz'
   }
