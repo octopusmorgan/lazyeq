@@ -412,7 +412,7 @@ if (btnRemoteMic) {
         } else {
           try {
             const sigUrl = new URL(signalingUrl.replace(/^ws/, "http"));
-            publicBaseUrl = `http://${sigUrl.hostname}:5173`;
+            publicBaseUrl = `http://${sigUrl.hostname}:${window.location.port}`;
           } catch {
             publicBaseUrl = window.location.origin;
           }
