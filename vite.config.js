@@ -45,6 +45,8 @@ export default defineConfig({
     },
   },
   build: {
+    target: 'es2020',
+    sourcemap: 'hidden',
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),

@@ -5,7 +5,7 @@
 
 import { SineSweepSource } from "./sineSweep.js";
 import { SpectrumAnalyzer } from "./analyzer.js";
-import { RemoteMicHost } from "./webrtc/remoteMic.js";
+import { RemoteMicHost } from "./webrtc/remoteMicHost.js";
 import { generateQRDataUrl } from "./webrtc/qrCode.js";
 import { resolveSignalingUrl, isPrivateOrLocalHostname } from "./webrtc/networkDiscovery.js";
 import { SAMPLE_RATE } from "./constants.js";
@@ -13,7 +13,6 @@ import {
   exportWavelet,
   exportEqMac,
   generateVisualizationData,
-  getHarmanTargetDB,
   EQMAC_BANDS,
 } from "./eqGenerator.js";
 

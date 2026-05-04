@@ -12,7 +12,9 @@ test("required application files exist", () => {
     "src/sineSweep.js",
     "src/eqGenerator.js",
     "src/style.css",
-    "src/webrtc/remoteMic.js",
+    "src/webrtc/signalingChannel.js",
+    "src/webrtc/remoteMicHost.js",
+    "src/webrtc/remoteMicClient.js",
     "src/webrtc/networkDiscovery.js",
     "src/webrtc/qrCode.js",
     "server/signaling.js",
@@ -31,7 +33,7 @@ test("main entrypoint uses local modules (not package aliases)", () => {
   assert.ok(main.includes("./sineSweep.js"));
   assert.ok(main.includes("./analyzer.js"));
   assert.ok(main.includes("./eqGenerator.js"));
-  assert.ok(main.includes("./webrtc/remoteMic.js"));
+  assert.ok(main.includes("./webrtc/remoteMicHost.js"));
   assert.ok(!main.includes("@acoustic-forge/"));
 });
 
