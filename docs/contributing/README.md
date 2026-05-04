@@ -1,6 +1,6 @@
-# Contributing to AcousticForge
+# Contributing to lazyEq
 
-We're excited that you're interested in contributing to AcousticForge! This document provides guidelines for contributing to our open source audio calibration platform.
+We're excited that you're interested in contributing to lazyEq. This document provides guidelines for contributing to this open source audio calibration app.
 
 ## How to Contribute
 
@@ -39,4 +39,4 @@ Please note that this project is released with a Contributor Code of Conduct. By
 
 If you have questions about the project or need help getting started, feel free to reach out via GitHub issues.
 
-Thank you for your interest in improving AcousticForge!
+Thank you for helping improve lazyEq.

@@ -81,7 +81,6 @@ src/
 │   ├── remoteMic.js     # WebRTC host (PC) and client (phone)
 │   ├── networkDiscovery.js  # LAN network discovery
 │   └── qrCode.js        # QR code generation for phone pairing
-└── i18n.js              # Internationalization
 ```
 
 ```

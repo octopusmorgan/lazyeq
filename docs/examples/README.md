@@ -1,15 +1,15 @@
 # Examples
 
-This directory contains examples of how to use AcousticForge in various scenarios.
+This directory contains usage examples for lazyEq workflows.
 
 ## Basic Usage
 
-Examples showing fundamental usage patterns of the AcousticForge API.
+Examples showing basic local and remote-mic measurement flows.
 
 ## Advanced Usage
 
-Examples showing more complex scenarios and integrations.
+Examples for advanced calibration and troubleshooting.
 
 ## Custom Implementations
 
-Examples of custom implementations using the core algorithms.
+Examples of adapting internal modules for custom experiments.

@@ -1,6 +1,6 @@
 /**
- * Simple test runner for lazyEq
- * Run with: node test.js
+ * Dist smoke test for lazyEq
+ * Run with: npm run test:dist (requires an existing dist build)
  */
 
 import fs from 'fs';

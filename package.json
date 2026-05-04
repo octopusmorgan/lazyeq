@@ -10,9 +10,10 @@
     "signaling:wss": "CERT=1 node server/signaling.js",
     "build": "vite build",
     "preview": "vite preview",
-    "test:unit": "node --test tests/eqGenerator.test.js tests/roomCalibration.test.js",
-    "test": "node --test tests/eqGenerator.test.js tests/roomCalibration.test.js && node test.js",
-    "build:test": "vite build && node --test tests/eqGenerator.test.js tests/roomCalibration.test.js && node test.js"
+    "test:unit": "node --test tests/*.test.js",
+    "test": "node --test tests/*.test.js",
+    "test:dist": "node test.js",
+    "build:test": "vite build && node --test tests/*.test.js && node test.js"
   },
   "devDependencies": {
     "qrcode": "^1.5.4",
