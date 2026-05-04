@@ -96,6 +96,38 @@ export class SineSweepSource {
     }
   }
 
+  /**
+   * Generate the inverse filter for deconvolution (Farina's method).
+   * The inverse filter is the time-reversed sweep with exponential amplitude compensation.
+   * When convolved with the original sweep, produces a flat impulse response.
+   */
+  generateInverseFilter() {
+    if (!this.buffer) {
+      throw new Error('Must create buffer before generating inverse filter');
+    }
+
+    const sampleCount = this.buffer.length;
+    const f0 = 20;
+    const f1 = 16000;
+    const T = this.duration;
+    const logRatio = Math.log(f1 / f0);
+
+    const inverseBuffer = this.audioContext.createBuffer(1, sampleCount, this.audioContext.sampleRate);
+    const data = inverseBuffer.getChannelData(0);
+    const originalData = this.buffer.getChannelData(0);
+
+    for (let i = 0; i < sampleCount; i++) {
+      // Time-reverse
+      const reversedIdx = sampleCount - 1 - i;
+      // Apply exponential amplitude compensation
+      const t = i / this.audioContext.sampleRate;
+      const compensation = Math.exp(-t * logRatio / T);
+      data[i] = originalData[reversedIdx] * compensation;
+    }
+
+    return inverseBuffer;
+  }
+
   setVolume(vol) {
     this.gainNode.gain.setValueAtTime(Math.max(0, Math.min(1, vol)), this.audioContext.currentTime);
   }

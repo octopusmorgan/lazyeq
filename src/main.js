@@ -1075,6 +1075,7 @@ btnStop.addEventListener("click", async () => {
       sweepSource.stop();
       sweepSource = null;
     }
+    // If we have a sweep response promise, use it; otherwise fall back to peak-hold
     await processSweepResults();
   } catch (err) {
     console.error(err);
@@ -1083,6 +1084,21 @@ btnStop.addEventListener("click", async () => {
     btnSweep.disabled = false;
   }
 });
+
+// Practical target curve — gentle "house curve" tilt that matches real listening preference.
+// Unlike a pure flat target, this allows natural bass warmth and smooth treble roll-off.
+// Based on common consumer EQ preferences (slight V-shape with bass emphasis).
+function getPracticalTargetDB(freq) {
+  if (freq < 40) return 1.5;      // Sub-bass: slight lift
+  if (freq < 80) return 1.0;      // Bass: warm
+  if (freq < 200) return 0.5;     // Upper bass: transitioning
+  if (freq < 500) return 0.0;     // Lower mids: reference (0 dB)
+  if (freq < 2000) return 0.0;    // Mids: flat
+  if (freq < 4000) return -0.5;   // Presence: slight dip
+  if (freq < 8000) return -1.0;   // Treble: gentle roll-off
+  if (freq < 12000) return -1.5;  // High treble: more roll-off
+  return -2.0;                     // Ultra highs: natural limitation
+}
 
 // Shared processing for sweep results
 // @param {Float32Array} spectrum - Frequency spectrum data
@@ -1124,10 +1140,15 @@ function _processMeasurementResults(spectrum, options = {}) {
     normalizedResponse[i] = smoothedResponse[i] - rangeAvg;
   }
 
-  // Calculate gains (Harman target from eqGenerator)
+  // Calculate gains using a practical target curve with gentle tilt
+  // Pure flat targets over-correct natural speaker roll-off.
+  // A gentle downward tilt (like real listening preference) is more natural.
   const rawGains = new Float32Array(visData.length);
   for (let i = 0; i < visData.length; i++) {
-    const targetOffset = getHarmanTargetDB(visData[i].x);
+    const freq = visData[i].x;
+    // Practical target: slight bass boost preference, gentle treble roll-off
+    // This matches how people actually prefer to listen (House Curve)
+    const targetOffset = getPracticalTargetDB(freq);
     rawGains[i] = targetOffset - normalizedResponse[i];
   }
 
@@ -1143,11 +1164,12 @@ function _processMeasurementResults(spectrum, options = {}) {
   return { visData, normalizedResponse, gains, rangeAvg };
 }
 
-// Process sweep results
+// Process sweep results using peak-hold FFT with spectral compensation
 async function processSweepResults() {
   if (sweepProcessing) return;
   sweepProcessing = true;
 
+  // Peak-hold FFT with spectral compensation for log sweep 1/f energy distribution
   if (!accumulatedSpectrum || frameCount < 10) {
     sweepProcessing = false;
     statusSweep.textContent = "Need more data — play sweep longer!";
@@ -1157,35 +1179,103 @@ async function processSweepResults() {
     return;
   }
 
-  const corrected = analyzer.getCorrectedSpectrumFromDB(accumulatedSpectrum);
+  // A logarithmic sweep has constant energy per octave, meaning energy per Hz drops as 1/f.
+  // We compensate by adding 10*log10(f/f0) dB to each bin to flatten the response.
+  const f0 = 20; // Sweep start frequency
+  const sr = analyzer.audioContext.sampleRate;
+  const fftSz = analyzer.analyserNode.fftSize;
+  const bw = sr / fftSz;
+  
+  const compensated = new Float32Array(accumulatedSpectrum.length);
+  for (let i = 0; i < accumulatedSpectrum.length; i++) {
+    const freq = i * bw;
+    if (freq > f0) {
+      compensated[i] = accumulatedSpectrum[i] + 10 * Math.log10(freq / f0);
+    } else {
+      compensated[i] = accumulatedSpectrum[i];
+    }
+  }
+
+  const corrected = analyzer.getCorrectedSpectrumFromDB(compensated);
 
   let minS = Infinity, maxS = -Infinity, filled = 0;
-  for (let i = 0; i < accumulatedSpectrum.length; i++) {
-    if (accumulatedSpectrum[i] > -100) {
-      minS = Math.min(minS, accumulatedSpectrum[i]);
-      maxS = Math.max(maxS, accumulatedSpectrum[i]);
+  for (let i = 0; i < corrected.length; i++) {
+    if (corrected[i] > -100) {
+      minS = Math.min(minS, corrected[i]);
+      maxS = Math.max(maxS, corrected[i]);
       filled++;
     }
   }
+
+  // Detailed diagnostic: raw vs compensated vs corrected at key frequencies
   if (import.meta.env.DEV) {
+    const sampleRate = analyzer.audioContext.sampleRate;
+    const fftSize = analyzer.analyserNode.fftSize;
+    const binWidth = sampleRate / fftSize;
+    const keyFreqs = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 12500, 16000];
+
     console.log("=== SWEEP RESULTS ===");
-    console.log("Total frames captured:", frameCount);
-    console.log("Bins with signal (>-100dB):", filled, "of", accumulatedSpectrum.length);
-    console.log("Peak held range:", minS.toFixed(1), "→", maxS.toFixed(1));
+    console.log("Bins with signal (>-100dB):", filled, "of", corrected.length);
+    console.log("Range:", minS.toFixed(1), "→", maxS.toFixed(1));
+    console.log("Method: Peak-hold FFT + 1/f spectral compensation");
+    console.log("Sample rate:", sampleRate, "| FFT size:", fftSize, "| Bin width:", binWidth.toFixed(1), "Hz");
+    console.log("");
+    console.log("=== RAW vs COMPENSATED vs CORRECTED ===");
+    console.log("Freq\t| Raw dB\t| Compensated\t| Corrected dB");
+    console.log("--------|-----------|---------------|---------------");
+    for (const freq of keyFreqs) {
+      const binIdx = Math.round(freq / binWidth);
+      const raw = accumulatedSpectrum[binIdx] ?? -120;
+      const comp = compensated[binIdx] ?? -120;
+      const cor = corrected[binIdx] ?? -120;
+      console.log(`${freq.toString().padStart(6)} Hz | ${raw.toFixed(1).padStart(8)}\t| ${comp.toFixed(1).padStart(12)}\t| ${cor.toFixed(1)}`);
+    }
+    console.log("");
+
+    // Also log the noise floor range if available
+    if (analyzer.noiseBuffer) {
+      let noiseMin = Infinity, noiseMax = -Infinity;
+      for (let i = 0; i < analyzer.noiseBuffer.length; i++) {
+        if (analyzer.noiseBuffer[i] > -120) {
+          noiseMin = Math.min(noiseMin, analyzer.noiseBuffer[i]);
+          noiseMax = Math.max(noiseMax, analyzer.noiseBuffer[i]);
+        }
+      }
+      console.log("Noise floor range:", noiseMin.toFixed(1), "→", noiseMax.toFixed(1), "dB");
+    }
   }
 
-  statusSweep.textContent = "Sweep analysis complete (Harman target)";
+  statusSweep.textContent = "Sweep analysis complete (practical target)";
   statusSweep.className = "status done";
 
   await new Promise((resolve) => requestAnimationFrame(resolve));
   resizeCanvases();
 
-  // Use shared processing
+  // Use shared processing with conservative EQ limits for real-world speakers
   const { visData, normalizedResponse, gains, rangeAvg } = _processMeasurementResults(corrected, {
     method: 'sweep',
-    gainLimits: { maxGain: 8, maxCut: -12, bassMax: 4 },
-    smoothingFactor: 1.0
+    gainLimits: { maxGain: 6, maxCut: -6, bassMax: 6 },
+    smoothingFactor: 2.0
   });
+
+  // Log final processing results at key frequencies
+  if (import.meta.env.DEV) {
+    const keyFreqs = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 12500, 16000];
+    console.log("=== FINAL EQ CURVE ===");
+    console.log("rangeAvg (normalization):", rangeAvg.toFixed(1), "dB");
+    console.log("");
+    console.log("Freq\t| Response dB\t| EQ Gain dB");
+    console.log("--------|---------------|------------");
+    for (const freq of keyFreqs) {
+      const point = visData.find(v => Math.abs(v.x - freq) < freq * 0.1);
+      if (point) {
+        const idx = visData.indexOf(point);
+        const response = normalizedResponse[idx];
+        const gain = gains[idx];
+        console.log(`${freq.toString().padStart(6)} Hz | ${response.toFixed(1).padStart(12)}\t| ${gain >= 0 ? '+' : ''}${gain.toFixed(1)}`);
+      }
+    }
+  }
 
   // Render graphs
   const specCtx = canvasSpectrum.getContext("2d");
