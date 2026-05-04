@@ -97,6 +97,17 @@ const remoteMicServerHint = document.getElementById("remote-mic-server-hint");
 const remoteMicConnectedBadge = document.getElementById("remote-mic-connected");
 const sweepInstructions = document.getElementById("sweep-instructions");
 
+// Card sections for progress state management
+const cardDevices = document.getElementById("step-devices");
+const cardNoise = document.getElementById("step-noise");
+const cardSweep = document.getElementById("step-sweep");
+const cardResults = document.getElementById("step-results");
+const cardExport = document.getElementById("step-export");
+let resultsReady = false;
+
+// Hide results section until first measurement completes
+if (cardResults) cardResults.classList.add("hidden");
+
 // ─── Step Indicator & Progress Helpers ───────────────────────────────
 
 /**
@@ -119,6 +130,18 @@ function updateStepIndicator(step, state) {
   }
   if (state === "completed" && step === 2 && calConn2) {
     calConn2.classList.add("completed");
+  }
+
+  // Update card sections (active/completed/pending)
+  const cards = [cardDevices, cardNoise, cardSweep, cardResults, cardExport];
+  const cardMap = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4 }; // step → card index
+  // step 1=Noise card, 2=Sweep card, 3=Export card
+  const cardIdx = { 1: 1, 2: 2, 3: 4 };
+  const card = cardIdx[step] != null ? cards[cardIdx[step]] : null;
+  if (card) {
+    card.classList.remove("active", "completed");
+    if (state === "active") card.classList.add("active");
+    if (state === "completed") card.classList.add("completed");
   }
 }
 
@@ -953,6 +976,13 @@ function resizeCanvases() {
 // Step 1: Capture noise floor
 btnNoise.addEventListener("click", async () => {
   try {
+    // Auto-load devices on first user gesture if not loaded yet
+    if (!selectedMicDeviceId && micSelect.options.length <= 1 && micSelect.options[0]?.textContent === "Loading devices…") {
+      statusDevices.textContent = "Detecting microphones...";
+      statusDevices.className = "status";
+      await loadDevices();
+    }
+
     // If remote mic mode is active but stream hasn't arrived yet, wait for it
     if (remoteMicHost && !remoteMicHost.remoteStream) {
       statusNoise.textContent = "Waiting for remote mic to connect...";
@@ -1035,7 +1065,11 @@ await analyzer.captureNoiseFloor(5);
     btnSweep.disabled = false;
   } catch (err) {
     console.error(err);
-    statusNoise.textContent = "Noise floor calibration failed. Make sure your mic is working and try again.";
+    if (err.name === "NotAllowedError" || err.message?.includes("permission")) {
+      statusNoise.textContent = "Microphone access was blocked. Check your browser's address bar for the blocked-permissions icon, allow mic access, and try again.";
+    } else {
+      statusNoise.textContent = "Noise floor calibration failed. Make sure your mic is working and try again.";
+    }
     statusNoise.className = "status danger";
     hideProgressBar("noise");
     updateStepIndicator(1, "pending");
@@ -1663,6 +1697,8 @@ async function processSweepResults() {
   btnExportWavelet.dataset.gains = JSON.stringify(gains);
   btnExportEqMac.dataset.gains = JSON.stringify(gains);
   btnExportEqMac.dataset.visData = JSON.stringify(visData);
+  resultsReady = true;
+  if (cardResults) cardResults.classList.remove("hidden");
 
   // Release microphone after results are ready
   try {

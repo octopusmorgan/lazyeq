@@ -23,6 +23,7 @@ function test(name, fn) {
   } catch (e) {
     console.log('❌ FAIL:', name);
     console.log('   Error:', e.message);
+    console.log('   Stack:', e.stack?.split('\n').slice(0, 3).join('\n        '));
     failed++;
   }
 }

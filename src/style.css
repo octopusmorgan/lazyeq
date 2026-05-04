@@ -185,6 +185,16 @@ h1 {
   transform: translateY(-2px);
 }
 
+.card.hidden {
+  display: none;
+}
+
+@media (hover: none) {
+  .card:hover {
+    transform: none;
+  }
+}
+
 .card-header {
   display: flex;
   align-items: center;
@@ -299,6 +309,11 @@ button {
   border-color: rgba(255, 255, 255, 0.15);
 }
 
+.btn-secondary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .btn-stop {
   background: linear-gradient(135deg, var(--danger), #e84545);
   color: #fff;
@@ -309,6 +324,12 @@ button {
 .btn-stop:hover:not(:disabled) {
   background: linear-gradient(135deg, #ff5252, #e84545);
   box-shadow: 0 8px 24px rgba(255, 107, 107, 0.3);
+}
+
+.btn-stop:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .btn-icon {
@@ -502,6 +523,12 @@ canvas {
 .status.error::before {
   background: var(--danger);
 }
+.status.danger {
+  color: var(--danger);
+}
+.status.danger::before {
+  background: var(--danger);
+}
 
 @keyframes blink {
   0%, 100% { opacity: 1; }
@@ -565,6 +592,12 @@ canvas {
 .btn-export:hover:not(:disabled) {
   background: linear-gradient(135deg, var(--accent-primary-dim), rgba(0, 245, 212, 0.1));
   box-shadow: 0 4px 16px rgba(0, 245, 212, 0.2);
+}
+
+.btn-export:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  border-color: rgba(0, 245, 212, 0.15);
 }
 
 /* ===== DEVICE ROW ===== */

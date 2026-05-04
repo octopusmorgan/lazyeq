@@ -150,7 +150,7 @@
     <button id="btn-disconnect" class="btn-secondary">Disconnect</button>
   </div>
 
-  <div id="debug-log" style="width:100%;max-width:360px;margin-top:1rem;padding:0.75rem;background:#1a1a2e;border:1px solid #fc5c5c;border-radius:0.5rem;font-size:0.85rem;color:#ffc857;font-family:monospace;max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;line-height:1.4;">
+  <div id="debug-log" class="hidden" style="width:100%;max-width:360px;margin-top:1rem;padding:0.75rem;background:#1a1a2e;border:1px solid #fc5c5c;border-radius:0.5rem;font-size:0.85rem;color:#ffc857;font-family:monospace;max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;line-height:1.4;">
   </div>
 
   <div id="error-banner" class="hidden" style="width:100%;max-width:360px;margin-top:0.5rem;padding:1rem;background:rgba(252,92,92,0.15);border:2px solid #fc5c5c;border-radius:0.5rem;font-size:1rem;color:#fc5c5c;font-weight:bold;text-align:center;">
@@ -194,6 +194,7 @@
         debugLog.scrollTop = debugLog.scrollHeight;
       }
       if (msg.toLowerCase().includes('error') || msg.toLowerCase().includes('fail')) {
+        if (debugLog) debugLog.classList.remove('hidden');
         if (errorBanner) {
           errorBanner.textContent = '❌ ' + msg;
           errorBanner.classList.remove('hidden');
