@@ -66,10 +66,24 @@ const statusSweep = document.getElementById("status-sweep");
 const statusExport = document.getElementById("status-export");
 const statusDevices = document.getElementById("status-devices");
 const micSelect = document.getElementById("mic-select");
+const sweepCountSelect = document.getElementById("sweep-count");
 const canvasSpectrum = document.getElementById("canvas-spectrum");
 const canvasEstimated = document.getElementById("canvas-estimated");
 const canvasEq = document.getElementById("canvas-eq");
 const canvasLive = document.getElementById("canvas-live");
+
+// Progress bar elements
+const noiseProgressContainer = document.getElementById("noise-progress-container");
+const noiseProgressBar = document.getElementById("noise-progress-bar");
+const sweepProgressContainer = document.getElementById("sweep-progress-container");
+const sweepProgressBar = document.getElementById("sweep-progress-bar");
+
+// Step indicator elements
+const calStep1 = document.getElementById("cal-step-1");
+const calStep2 = document.getElementById("cal-step-2");
+const calStep3 = document.getElementById("cal-step-3");
+const calConn1 = document.getElementById("cal-conn-1");
+const calConn2 = document.getElementById("cal-conn-2");
 
 // Remote Mic DOM Elements
 const btnRemoteMic = document.getElementById("btn-remote-mic");
@@ -83,6 +97,54 @@ const remoteMicPublicUrlInput = document.getElementById("remote-mic-public-url")
 const remoteMicServerHint = document.getElementById("remote-mic-server-hint");
 const remoteMicConnectedBadge = document.getElementById("remote-mic-connected");
 const sweepInstructions = document.getElementById("sweep-instructions");
+
+// ─── Step Indicator & Progress Helpers ───────────────────────────────
+
+/**
+ * Update the calibration step indicator state.
+ * @param {number} step - 1, 2, or 3
+ * @param {'active' | 'completed' | 'pending'} state
+ */
+function updateStepIndicator(step, state) {
+  const stepEl = step === 1 ? calStep1 : step === 2 ? calStep2 : calStep3;
+  if (!stepEl) return;
+
+  stepEl.classList.remove("active", "completed");
+  if (state !== "pending") {
+    stepEl.classList.add(state);
+  }
+
+  // Update connectors
+  if (state === "completed" && step === 1 && calConn1) {
+    calConn1.classList.add("completed");
+  }
+  if (state === "completed" && step === 2 && calConn2) {
+    calConn2.classList.add("completed");
+  }
+}
+
+/**
+ * Set progress bar percentage (0-100).
+ * @param {'noise' | 'sweep'} type
+ * @param {number} percent - 0 to 100
+ */
+function setProgressBar(type, percent) {
+  const container = type === "noise" ? noiseProgressContainer : sweepProgressContainer;
+  const bar = type === "noise" ? noiseProgressBar : sweepProgressBar;
+  if (container) container.classList.remove("hidden");
+  if (bar) bar.style.width = Math.min(100, Math.max(0, percent)) + "%";
+}
+
+/**
+ * Hide a progress bar.
+ * @param {'noise' | 'sweep'} type
+ */
+function hideProgressBar(type) {
+  const container = type === "noise" ? noiseProgressContainer : sweepProgressContainer;
+  const bar = type === "noise" ? noiseProgressBar : sweepProgressBar;
+  if (container) container.classList.add("hidden");
+  if (bar) bar.style.width = "0%";
+}
 
 // ─── Remote Mic Server URL Detection ───────────────────────────────
 
@@ -914,25 +976,30 @@ btnNoise.addEventListener("click", async () => {
     }
 
     const remoteLabelNoise = isRemoteMicActive ? " [Remote Mic]" : "";
-    statusNoise.textContent = "Calibrating mic (5s silence)..." + remoteLabelNoise;
+    statusNoise.textContent = "Step 1 of 3: Please stay quiet for 5 seconds to measure room noise floor..." + remoteLabelNoise;
     statusNoise.className = "status";
     btnNoise.disabled = true;
+    updateStepIndicator(1, "active");
 
     const ctx = await ensureAudioContext();
     analyzer = new SpectrumAnalyzer();
     await initAnalyzer(ctx);
 
-    statusNoise.textContent = "Recording noise floor...";
+    statusNoise.textContent = "Recording noise floor... keep quiet";
     statusNoise.className = "status recording";
+    hideProgressBar("noise");
 
     const startTime = Date.now();
     const captureDuration = 5000;
 
     const updateNoiseDisplay = async () => {
+      const elapsed = (Date.now() - startTime) / 1000;
+      const progress = Math.min(100, (elapsed / (captureDuration / 1000)) * 100);
+      setProgressBar("noise", progress);
+
       if (analyzer && analyzer.getRMSLevel) {
         const db = analyzer.getRMSLevel();
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        statusNoise.textContent = `Recording: ${db.toFixed(0)} dB (${elapsed}s)`;
+        statusNoise.textContent = `Recording noise floor... ${db.toFixed(0)} dB — keep quiet`;
       }
       if (Date.now() - startTime < captureDuration) {
         setTimeout(updateNoiseDisplay, 100);
@@ -955,24 +1022,131 @@ await analyzer.captureNoiseFloor(5);
         }
       }
       if (minDB === Infinity) {
-        statusNoise.textContent = "Noise floor: silent (< -100dB)";
+        statusNoise.textContent = "Step 1 complete: Noise floor captured (silent environment)";
       } else {
-        statusNoise.textContent = `Noise floor: ${minDB.toFixed(0)} to ${maxDB.toFixed(0)} dB`;
+        statusNoise.textContent = `Step 1 complete: Noise floor measured (${minDB.toFixed(0)} to ${maxDB.toFixed(0)} dB)`;
       }
     } else {
-      statusNoise.textContent = "Noise floor captured";
+      statusNoise.textContent = "Step 1 complete: Noise floor captured";
     }
     statusNoise.className = "status done";
+    hideProgressBar("noise");
+    updateStepIndicator(1, "completed");
+    updateStepIndicator(2, "active");
     btnSweep.disabled = false;
   } catch (err) {
     console.error(err);
-    statusNoise.textContent = "Error: " + err.message;
+    statusNoise.textContent = "Noise floor calibration failed. Make sure your mic is working and try again.";
     statusNoise.className = "status danger";
+    hideProgressBar("noise");
+    updateStepIndicator(1, "pending");
     btnNoise.disabled = false;
   }
 });
 
-// Step 2: Play Sine Sweep
+/**
+ * Compute frequency spectrum from recorded PCM using Welch's method.
+ * Produces a dB spectrum compatible with the existing processing pipeline.
+ *
+ * @param {Float32Array} pcm - Raw PCM recording
+ * @param {number} sampleRate - Audio sample rate
+ * @param {number} targetBins - Number of output bins (matches FFT_SIZE/2 = 1024)
+ * @returns {Float32Array} Spectrum in dB
+ */
+function computeSpectrumFromPCM(pcm, sampleRate, targetBins) {
+  const fftSize = 65536; // Power of 2, good frequency resolution
+  const N = fftSize;
+
+  // Use only the sweep-duration portion of the recording
+  const sweepSamples = Math.floor(sweepDuration * sampleRate);
+  const signal = pcm.length >= sweepSamples
+    ? pcm.subarray(0, sweepSamples)
+    : pcm;
+
+  // Hann window
+  const window = new Float32Array(N);
+  let windowPower = 0;
+  for (let i = 0; i < N; i++) {
+    window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (N - 1)));
+    windowPower += window[i] * window[i];
+  }
+
+  // Welch's method: average periodograms with 50% overlap
+  const hopSize = Math.floor(N / 2);
+  const numWindows = Math.max(1, Math.floor((signal.length - N) / hopSize) + 1);
+  const spectrum = new Float64Array(N / 2);
+
+  for (let w = 0; w < numWindows; w++) {
+    const offset = w * hopSize;
+    const real = new Float64Array(N);
+    const imag = new Float64Array(N);
+
+    for (let i = 0; i < N && (offset + i) < signal.length; i++) {
+      real[i] = signal[offset + i] * window[i];
+    }
+
+    // Radix-2 Cooley-Tukey FFT (in-place)
+    // Bit-reversal permutation
+    for (let i = 1, j = 0; i < N; i++) {
+      let bit = N >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) {
+        [real[i], real[j]] = [real[j], real[i]];
+        [imag[i], imag[j]] = [imag[j], imag[i]];
+      }
+    }
+
+    // Butterfly stages
+    for (let len = 2; len <= N; len <<= 1) {
+      const halfLen = len >> 1;
+      const angle = -2 * Math.PI / len;
+      const wRe = Math.cos(angle);
+      const wIm = Math.sin(angle);
+      for (let i = 0; i < N; i += len) {
+        let curRe = 1, curIm = 0;
+        for (let j = 0; j < halfLen; j++) {
+          const tRe = curRe * real[i + j + halfLen] - curIm * imag[i + j + halfLen];
+          const tIm = curRe * imag[i + j + halfLen] + curIm * real[i + j + halfLen];
+          real[i + j + halfLen] = real[i + j] - tRe;
+          imag[i + j + halfLen] = imag[i + j] - tIm;
+          real[i + j] += tRe;
+          imag[i + j] += tIm;
+          const newRe = curRe * wRe - curIm * wIm;
+          curIm = curRe * wIm + curIm * wRe;
+          curRe = newRe;
+        }
+      }
+    }
+
+    // Accumulate magnitude squared
+    for (let i = 0; i < N / 2; i++) {
+      spectrum[i] += (real[i] * real[i] + imag[i] * imag[i]) / (numWindows * windowPower);
+    }
+  }
+
+  // Convert to dB
+  const fullSpectrum = new Float32Array(N / 2);
+  for (let i = 0; i < N / 2; i++) {
+    fullSpectrum[i] = spectrum[i] > 0 ? 10 * Math.log10(spectrum[i]) : -120;
+  }
+
+  // Resample to target bins using log-frequency interpolation
+  const result = new Float32Array(targetBins);
+  const srcNyquist = sampleRate / 2;
+  for (let i = 0; i < targetBins; i++) {
+    const freq = (i / targetBins) * srcNyquist;
+    const srcIdx = (freq / srcNyquist) * (N / 2);
+    const idxLo = Math.max(0, Math.min(N / 2 - 2, Math.floor(srcIdx)));
+    const idxHi = idxLo + 1;
+    const frac = srcIdx - idxLo;
+    result[i] = fullSpectrum[idxLo] * (1 - frac) + fullSpectrum[idxHi] * frac;
+  }
+
+  return result;
+}
+
+// Step 2: Play Sine Sweep (supports multi-sweep averaging)
 btnSweep.addEventListener("click", async () => {
   try {
     // If remote mic mode is active but stream hasn't arrived yet, wait for it
@@ -995,33 +1169,208 @@ btnSweep.addEventListener("click", async () => {
       }
     }
 
-    const remoteLabel = isRemoteMicActive ? " [Remote Mic]" : "";
-    statusSweep.textContent = "Starting Sine Sweep (8s)..." + remoteLabel;
-    statusSweep.className = "status recording";
-    btnSweep.disabled = true;
-    btnStop.disabled = false;
-
-    const ctx = await ensureAudioContext();
-
-    // Reuse existing analyzer to preserve noiseBuffer, or create new one
+    // Check noise floor was calibrated
     if (!analyzer || !analyzer.noiseBuffer) {
-      statusSweep.textContent = "Error: Please calibrate noise floor first!";
+      statusSweep.textContent = "Please complete Step 1 (Noise Floor) before running the sweep.";
       statusSweep.className = "status danger";
       btnSweep.disabled = false;
       btnStop.disabled = true;
       return;
     }
 
+    // Read sweep count
+    const sweepCount = parseInt(sweepCountSelect?.value || "1");
+
+    const remoteLabel = isRemoteMicActive ? " [Remote Mic]" : "";
+    btnSweep.disabled = true;
+    btnStop.disabled = false;
+    hideProgressBar("sweep");
+    updateStepIndicator(2, "active");
+
+    const ctx = await ensureAudioContext();
+
     // Reinitialize with same audioContext but preserve noiseBuffer
     await initAnalyzer(ctx);
 
-    sweepSource = new SineSweepSource(ctx);
-    sweepSource.createBuffer(sweepDuration);
+    if (sweepCount === 1) {
+      // ── Single sweep (original behavior) ──
+      statusSweep.textContent = "Step 2 of 3: Playing 8-second sweep test tone through your speakers..." + remoteLabel;
+      statusSweep.className = "status recording";
 
-    sweepSource.onComplete = async () => {
-      statusSweep.textContent = "Sweep finished — processing...";
+      sweepSource = new SineSweepSource(ctx);
+      sweepSource.createBuffer(sweepDuration);
+
+      // Start AudioWorklet recording before playing the sweep
+      let recordingPromise = null;
+      let useWorklet = true;
+      try {
+        recordingPromise = analyzer.recordSweep(sweepDuration);
+      } catch (err) {
+        console.warn('[Sweep] AudioWorklet recording failed, using AnalyserNode fallback:', err.message);
+        useWorklet = false;
+      }
+
+      const sweepStartTime = Date.now();
+      const sweepUpdateInterval = setInterval(() => {
+        const elapsed = (Date.now() - sweepStartTime) / 1000;
+        const progress = Math.min(100, (elapsed / sweepDuration) * 100);
+        setProgressBar("sweep", progress);
+
+        if (analyzer && analyzer.getRMSLevel) {
+          const db = analyzer.getRMSLevel();
+          statusSweep.textContent = `Recording sweep response... ${db.toFixed(0)} dB`;
+        }
+      }, 200);
+
+      sweepSource.onComplete = async () => {
+        clearInterval(sweepUpdateInterval);
+        setProgressBar("sweep", 100);
+        statusSweep.textContent = "Sweep finished — processing frequency response...";
+        statusSweep.className = "status info";
+        btnStop.disabled = true;
+
+        sweepProcessTimeout = setTimeout(async () => {
+          if (animationFrame) {
+            cancelAnimationFrame(animationFrame);
+            animationFrame = null;
+          }
+
+          // If AudioWorklet recording was used, process the recorded PCM
+          if (useWorklet && recordingPromise) {
+            try {
+              const recordedPCM = await recordingPromise;
+              if (recordedPCM && recordedPCM.length > 0) {
+                if (import.meta.env.DEV) {
+                  console.log('[Sweep] AudioWorklet recording complete:', recordedPCM.length, 'samples');
+                }
+                // Compute spectrum from recorded PCM
+                const fftSize = analyzer.analyserNode.fftSize;
+                const targetBins = fftSize / 2;
+                const spectrum = computeSpectrumFromPCM(recordedPCM, analyzer.audioContext.sampleRate, targetBins);
+
+                // Replace accumulatedSpectrum with the computed spectrum for processing
+                accumulatedSpectrum = spectrum;
+                frameCount = 100; // Ensure we pass the "enough data" check
+              }
+            } catch (err) {
+              console.warn('[Sweep] AudioWorklet processing failed, falling back to peak-hold:', err.message);
+              // Fall back to existing peak-hold data
+            }
+          }
+
+          await processSweepResults();
+        }, 500);
+      };
+
+      sweepSource.start();
+      renderLiveSweep();
+
+      if (import.meta.env.DEV && isRemoteMicActive) {
+        const checkRMS = () => {
+          if (analyzer) {
+            const rms = analyzer.getRMSLevel();
+            console.log("[DIAG] Remote mic RMS level:", rms.toFixed(1), "dB");
+          }
+        };
+        checkRMS();
+        const rmsInterval = setInterval(checkRMS, 2000);
+        setTimeout(() => clearInterval(rmsInterval), sweepDuration * 1000 + 2000);
+      }
+    } else {
+      // ── Multi-sweep averaging ──
+      statusSweep.textContent = `Step 2 of 3: Running ${sweepCount} sweeps for averaging...` + remoteLabel;
+      statusSweep.className = "status recording";
+
+      const allSpectra = [];
+
+      for (let sweepNum = 0; sweepNum < sweepCount; sweepNum++) {
+        // Reset accumulation for each sweep
+        accumulatedSpectrum = null;
+        frameCount = 0;
+
+        statusSweep.textContent = `Sweep ${sweepNum + 1} of ${sweepCount}...`;
+        const sweepProgress = ((sweepNum) / sweepCount) * 100;
+        setProgressBar("sweep", sweepProgress);
+
+        sweepSource = new SineSweepSource(ctx);
+        sweepSource.createBuffer(sweepDuration);
+
+        // Wait for this sweep to complete
+        await new Promise((resolve, reject) => {
+          const sweepStartTime = Date.now();
+          const sweepUpdateInterval = setInterval(() => {
+            const elapsed = (Date.now() - sweepStartTime) / 1000;
+            const sweepProgress = ((sweepNum + elapsed / sweepDuration) / sweepCount) * 100;
+            setProgressBar("sweep", sweepProgress);
+
+            if (analyzer && analyzer.getRMSLevel) {
+              const db = analyzer.getRMSLevel();
+              statusSweep.textContent = `Sweep ${sweepNum + 1} of ${sweepCount}... ${db.toFixed(0)} dB`;
+            }
+          }, 200);
+
+          sweepSource.onComplete = async () => {
+            clearInterval(sweepUpdateInterval);
+
+            // Apply 1/f compensation to the accumulated peak-hold spectrum
+            const f0 = 20;
+            const sr = analyzer.audioContext.sampleRate;
+            const fftSz = analyzer.analyserNode.fftSize;
+            const bw = sr / fftSz;
+
+            const compensatedSpectrum = new Float32Array(accumulatedSpectrum.length);
+            for (let i = 0; i < accumulatedSpectrum.length; i++) {
+              const freq = i * bw;
+              if (freq > f0) {
+                compensatedSpectrum[i] = accumulatedSpectrum[i] + 10 * Math.log10(freq / f0);
+              } else {
+                compensatedSpectrum[i] = accumulatedSpectrum[i];
+              }
+            }
+
+            // Store the compensated spectrum
+            allSpectra.push(compensatedSpectrum);
+
+            // Reset for next sweep
+            accumulatedSpectrum = null;
+            frameCount = 0;
+
+            resolve();
+          };
+
+          sweepSource.start();
+          renderLiveSweep();
+        });
+
+        // Brief pause between sweeps
+        if (sweepNum < sweepCount - 1) {
+          statusSweep.textContent = `Pause before sweep ${sweepNum + 2}...`;
+          await new Promise(r => setTimeout(r, 500));
+        }
+      }
+
+      // All sweeps done — average the compensated spectra
+      setProgressBar("sweep", 100);
+      statusSweep.textContent = `Averaging ${sweepCount} sweeps...`;
       statusSweep.className = "status info";
       btnStop.disabled = true;
+
+      // Average in the compensated domain (after 1/f compensation, before noise subtraction)
+      const averaged = new Float32Array(allSpectra[0].length);
+      for (let i = 0; i < averaged.length; i++) {
+        let sum = 0;
+        for (const spectrum of allSpectra) {
+          sum += spectrum[i];
+        }
+        averaged[i] = sum / allSpectra.length;
+      }
+
+      // Restore accumulatedSpectrum with the averaged result for processSweepResults
+      accumulatedSpectrum = averaged;
+      frameCount = 100; // Ensure we pass the "enough data" check
+
+      // Store a flag so processSweepResults knows averaging was done (skip re-compensation)
+      window._sweepAveraged = true;
 
       sweepProcessTimeout = setTimeout(async () => {
         if (animationFrame) {
@@ -1030,27 +1379,12 @@ btnSweep.addEventListener("click", async () => {
         }
         await processSweepResults();
       }, 500);
-    };
-
-    sweepSource.start();
-    renderLiveSweep();
-
-    // Diagnostic: log RMS level every 2 seconds during sweep
-    if (import.meta.env.DEV && isRemoteMicActive) {
-      const checkRMS = () => {
-        if (analyzer) {
-          const rms = analyzer.getRMSLevel();
-          console.log("[DIAG] Remote mic RMS level:", rms.toFixed(1), "dB");
-        }
-      };
-      checkRMS();
-      const rmsInterval = setInterval(checkRMS, 2000);
-      setTimeout(() => clearInterval(rmsInterval), sweepDuration * 1000 + 2000);
     }
   } catch (err) {
     console.error(err);
-    statusSweep.textContent = "Error: " + err.message;
+    statusSweep.textContent = "Sweep failed: " + err.message + ". Try again or re-calibrate the noise floor first.";
     statusSweep.className = "status danger";
+    hideProgressBar("sweep");
     btnSweep.disabled = false;
   }
 });
@@ -1065,6 +1399,7 @@ btnStop.addEventListener("click", async () => {
   statusSweep.textContent = "Processing sweep response...";
   statusSweep.className = "status info";
   btnStop.disabled = true;
+  hideProgressBar("sweep");
 
   try {
     if (sweepProcessTimeout) {
@@ -1079,8 +1414,9 @@ btnStop.addEventListener("click", async () => {
     await processSweepResults();
   } catch (err) {
     console.error(err);
-    statusSweep.textContent = "Error: " + err.message;
+    statusSweep.textContent = "Processing failed: " + err.message + ". Try playing the sweep again.";
     statusSweep.className = "status danger";
+    hideProgressBar("sweep");
     btnSweep.disabled = false;
   }
 });
@@ -1190,27 +1526,35 @@ async function processSweepResults() {
   // Peak-hold FFT with spectral compensation for log sweep 1/f energy distribution
   if (!accumulatedSpectrum || frameCount < 10) {
     sweepProcessing = false;
-    statusSweep.textContent = "Need more data — play sweep longer!";
+    statusSweep.textContent = "Not enough data captured. Play the sweep for at least a few seconds, or try again.";
     statusSweep.className = "status danger";
     btnStop.disabled = false;
     btnSweep.disabled = false;
     return;
   }
 
-  // A logarithmic sweep has constant energy per octave, meaning energy per Hz drops as 1/f.
-  // We compensate by adding 10*log10(f/f0) dB to each bin to flatten the response.
-  const f0 = 20; // Sweep start frequency
-  const sr = analyzer.audioContext.sampleRate;
-  const fftSz = analyzer.analyserNode.fftSize;
-  const bw = sr / fftSz;
-  
-  const compensated = new Float32Array(accumulatedSpectrum.length);
-  for (let i = 0; i < accumulatedSpectrum.length; i++) {
-    const freq = i * bw;
-    if (freq > f0) {
-      compensated[i] = accumulatedSpectrum[i] + 10 * Math.log10(freq / f0);
-    } else {
-      compensated[i] = accumulatedSpectrum[i];
+  let compensated;
+
+  // Check if averaging was already done (multi-sweep mode) — skip re-compensation
+  if (window._sweepAveraged) {
+    // Already compensated and averaged — use directly
+    compensated = accumulatedSpectrum;
+    window._sweepAveraged = false; // Reset flag
+  } else {
+    // Single sweep — apply 1/f compensation
+    const f0 = 20; // Sweep start frequency
+    const sr = analyzer.audioContext.sampleRate;
+    const fftSz = analyzer.analyserNode.fftSize;
+    const bw = sr / fftSz;
+
+    compensated = new Float32Array(accumulatedSpectrum.length);
+    for (let i = 0; i < accumulatedSpectrum.length; i++) {
+      const freq = i * bw;
+      if (freq > f0) {
+        compensated[i] = accumulatedSpectrum[i] + 10 * Math.log10(freq / f0);
+      } else {
+        compensated[i] = accumulatedSpectrum[i];
+      }
     }
   }
 
@@ -1263,8 +1607,10 @@ async function processSweepResults() {
     }
   }
 
-  statusSweep.textContent = "Sweep analysis complete (effective range 100Hz-8kHz)";
+  statusSweep.textContent = "Step 3 of 3: Measurement complete! Your EQ curve is ready to export.";
   statusSweep.className = "status done";
+  updateStepIndicator(2, "completed");
+  updateStepIndicator(3, "active");
 
   await new Promise((resolve) => requestAnimationFrame(resolve));
   resizeCanvases();
@@ -1347,8 +1693,9 @@ btnExportWavelet.addEventListener("click", () => {
   const gains = JSON.parse(btnExportWavelet.dataset.gains);
   const content = exportWavelet(gains);
   downloadFile("lazyeq-wavelet.txt", content);
-  statusExport.textContent = "Wavelet preset exported";
+  statusExport.textContent = "Wavelet preset exported — import it into the Wavelet app on Android";
   statusExport.className = "status done";
+  updateStepIndicator(3, "completed");
 });
 
 btnExportEqMac.addEventListener("click", () => {
@@ -1356,8 +1703,9 @@ btnExportEqMac.addEventListener("click", () => {
   const visData = JSON.parse(btnExportEqMac.dataset.visData || "[]");
   const content = exportEqMac(gains, visData);
   downloadFile("lazyeq-eqmac.json", content);
-  statusExport.textContent = "eqMac preset exported";
+  statusExport.textContent = "eqMac preset exported — open eqMac on macOS and import the file";
   statusExport.className = "status done";
+  updateStepIndicator(3, "completed");
 });
 
 window.addEventListener("resize", resizeCanvases);
