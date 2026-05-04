@@ -1112,6 +1112,7 @@ function _processMeasurementResults(spectrum, options = {}) {
   const smoothingFactor = options.smoothingFactor || 1.0;
 
   const { maxGain, maxCut, bassMax } = gainLimits;
+  const effectiveRange = options.effectiveRange || { low: 0, high: Infinity };
   const linearFreqLabels = analyzer.getLinearFrequencyLabels();
   const visData = generateVisualizationData(spectrum, linearFreqLabels);
 
@@ -1121,14 +1122,11 @@ function _processMeasurementResults(spectrum, options = {}) {
 
   const smoothedResponse = adaptiveSmooth(responseArr, smoothingFactor);
 
-  // Normalize: center the measurement so its average in 100Hz-10kHz is 0 dB.
-  // NOTE: rangeAvg acts as a global gain offset in final EQ curve (gain = target - measurement + rangeAvg).
-  // This offset is benign — it does not alter the shape of the EQ, and digital preamp (eqMac export)
-  // absorbs it automatically. No audible impact.
+  // Normalize: center the measurement so its average in the effective range is 0 dB.
   let sumRange = 0, countRange = 0;
   for (let i = 0; i < smoothedResponse.length; i++) {
     const freq = visData[i].x;
-    if (freq >= 100 && freq <= 10000 && smoothedResponse[i] > -90 && isFinite(smoothedResponse[i])) {
+    if (freq >= effectiveRange.low && freq <= effectiveRange.high && smoothedResponse[i] > -90 && isFinite(smoothedResponse[i])) {
       sumRange += smoothedResponse[i];
       countRange++;
     }
@@ -1141,23 +1139,43 @@ function _processMeasurementResults(spectrum, options = {}) {
   }
 
   // Calculate gains using a practical target curve with gentle tilt
-  // Pure flat targets over-correct natural speaker roll-off.
-  // A gentle downward tilt (like real listening preference) is more natural.
   const rawGains = new Float32Array(visData.length);
   for (let i = 0; i < visData.length; i++) {
     const freq = visData[i].x;
-    // Practical target: slight bass boost preference, gentle treble roll-off
-    // This matches how people actually prefer to listen (House Curve)
     const targetOffset = getPracticalTargetDB(freq);
     rawGains[i] = targetOffset - normalizedResponse[i];
   }
 
+  // Apply gain limits with smooth fade-out outside effective range
   const gains = Array.from(rawGains).map((g, i) => {
+    const freq = visData[i].x;
     let gain = g;
-    if (visData[i].x < 100) {
+
+    // Apply hard limits first
+    if (freq < 100) {
       gain = Math.min(gain, bassMax);
     }
     gain = Math.max(maxCut, Math.min(maxGain, gain));
+
+    // Smooth fade-out outside effective range (1 octave transition)
+    if (freq < effectiveRange.low) {
+      const fadeFreq = effectiveRange.low / 2;
+      if (freq <= fadeFreq) {
+        gain *= 0; // No correction below half the low limit
+      } else {
+        const ratio = Math.log2(freq / fadeFreq);
+        gain *= ratio; // Linear fade in log space
+      }
+    } else if (freq > effectiveRange.high) {
+      const fadeFreq = effectiveRange.high * 2;
+      if (freq >= fadeFreq) {
+        gain *= 0; // No correction above double the high limit
+      } else {
+        const ratio = 1 - Math.log2(freq / effectiveRange.high);
+        gain *= ratio; // Linear fade in log space
+      }
+    }
+
     return gain;
   });
 
@@ -1245,17 +1263,19 @@ async function processSweepResults() {
     }
   }
 
-  statusSweep.textContent = "Sweep analysis complete (practical target)";
+  statusSweep.textContent = "Sweep analysis complete (effective range 100Hz-8kHz)";
   statusSweep.className = "status done";
 
   await new Promise((resolve) => requestAnimationFrame(resolve));
   resizeCanvases();
 
-  // Use shared processing with conservative EQ limits for real-world speakers
+  // Use shared processing with realistic limits for small Bluetooth speakers
+  // Focus correction on the speaker's effective range (100Hz-8kHz)
   const { visData, normalizedResponse, gains, rangeAvg } = _processMeasurementResults(corrected, {
     method: 'sweep',
-    gainLimits: { maxGain: 6, maxCut: -6, bassMax: 6 },
-    smoothingFactor: 2.0
+    gainLimits: { maxGain: 4, maxCut: -4, bassMax: 4 },
+    smoothingFactor: 2.5,
+    effectiveRange: { low: 100, high: 8000 }
   });
 
   // Log final processing results at key frequencies
