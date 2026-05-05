@@ -70,6 +70,11 @@ let lowInputWarningCount = 0;
 let cachedTargetCurve = null; // Pre-computed target curve for live canvas
 let lastMeasurementResult = null; // Best result for stop/partial
 
+// Active EQ state — filter chain applied to pink noise in real time
+const ACTIVE_EQ_FREQS = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
+let activeEQFilters = null;   // BiquadFilterNode[] inserted in pink noise path
+let cumulativeEQGains = null; // Float32Array(8) — running total of applied EQ
+
 // DOM Elements
 const btnNoise = document.getElementById("btn-noise");
 const btnSweep = document.getElementById("btn-sweep");
@@ -1808,8 +1813,26 @@ function startLiveCalibration() {
   // Reset convergence detector
   convergenceDetector = new ConvergenceDetector(CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT);
 
-  // Start pink noise
+  // Initialize cumulative EQ (starts flat — zero correction)
+  cumulativeEQGains = new Float32Array(ACTIVE_EQ_FREQS.length);
+
+  // Create active EQ filter chain — 8 peaking filters inserted in pink noise path
+  activeEQFilters = ACTIVE_EQ_FREQS.map((freq) => {
+    const filter = ctx.createBiquadFilter();
+    filter.type = "peaking";
+    filter.frequency.value = freq;
+    filter.Q.value = 1.0;
+    filter.gain.value = 0;
+    return filter;
+  });
+  // Chain filters in series
+  for (let i = 0; i < activeEQFilters.length - 1; i++) {
+    activeEQFilters[i].connect(activeEQFilters[i + 1]);
+  }
+
+  // Start pink noise with active EQ filter chain inserted
   pinkNoise = new PinkNoiseSource(ctx);
+  pinkNoise.setFilterChain(activeEQFilters);
   pinkNoise.start();
 
   // Initialize mic and start continuous measurement
@@ -1864,10 +1887,32 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
     effectiveRange: { low: 100, high: 8000 }
   });
 
+  // ── Active EQ: interpolate gains to filter bands and update ──────────
+  const deltaGains = new Float32Array(ACTIVE_EQ_FREQS.length);
+  for (let f = 0; f < ACTIVE_EQ_FREQS.length; f++) {
+    const targetFreq = ACTIVE_EQ_FREQS[f];
+    // Find nearest point in visData
+    let gain = 0;
+    const point = result.visData.find(v => Math.abs(v.x - targetFreq) < targetFreq * 0.15);
+    if (point) {
+      const idx = result.visData.indexOf(point);
+      gain = result.gains[idx];
+    }
+    deltaGains[f] = gain;
+    // Accumulate and clamp
+    cumulativeEQGains[f] += gain;
+    cumulativeEQGains[f] = Math.max(-4, Math.min(4, cumulativeEQGains[f]));
+    // Apply to filter
+    if (activeEQFilters && activeEQFilters[f]) {
+      activeEQFilters[f].gain.value = cumulativeEQGains[f];
+    }
+  }
+  // ── End active EQ update ──────────────────────────────────────────────
+
   // ── Diagnostic logs ──────────────────────────────────────────────────
   if (import.meta.env.DEV) {
     const binWidth = analyzer.audioContext.sampleRate / analyzer.analyserNode.fftSize;
-    const keyFreqs = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
+    const keyFreqs = ACTIVE_EQ_FREQS;
     const elapsed = (elapsedMs / 1000).toFixed(1);
 
     // Raw spectrum at key frequencies
@@ -1882,21 +1927,25 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
       return corrected[bin]?.toFixed(1) ?? '---';
     }).join(' | ');
 
-    // EQ gains from result
-    const eqVals = keyFreqs.map(f => {
-      const point = result.visData.find(v => Math.abs(v.x - f) < f * 0.1);
-      if (!point) return '----';
-      const idx = result.visData.indexOf(point);
-      const g = result.gains[idx];
+    // Delta gains (new correction needed this iteration)
+    const dVals = keyFreqs.map((_, i) => {
+      const g = deltaGains[i];
+      return (g >= 0 ? '+' : '') + g.toFixed(1);
+    }).join(' | ');
+
+    // Cumulative EQ (total applied so far)
+    const cVals = keyFreqs.map((_, i) => {
+      const g = cumulativeEQGains[i];
       return (g >= 0 ? '+' : '') + g.toFixed(1);
     }).join(' | ');
 
     console.log(
       `[t=${elapsed}s] RMS=${rms.toFixed(0)}dB\n` +
-      `  Freq (Hz):  ${keyFreqs.map(f => String(f).padStart(5)).join(' | ')}\n` +
-      `  Raw:        ${rawVals}\n` +
-      `  Corrected:  ${corVals}\n` +
-      `  EQ gains:   ${eqVals}`
+      `  Freq (Hz):   ${keyFreqs.map(f => String(f).padStart(5)).join(' | ')}\n` +
+      `  Raw:         ${rawVals}\n` +
+      `  Corrected:   ${corVals}\n` +
+      `  Δ needed:    ${dVals}\n` +
+      `  Cumulative:  ${cVals}`
     );
   }
   // ── End diagnostic logs ──────────────────────────────────────────────
@@ -1906,12 +1955,16 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
   liveEQGains = result.gains;
   lastMeasurementResult = result;
 
-  // Feed convergence detector
+  // Feed convergence detector with delta gains (how much correction is still needed)
   if (convergenceDetector) {
-    const { converged, delta } = convergenceDetector.push(result.gains);
+    const { converged, delta } = convergenceDetector.push(deltaGains);
+
+    // Active convergence: delta small AND corrections near zero
+    const maxCorrection = Math.max(...Array.from(deltaGains).map(Math.abs));
+    const isStable = converged && maxCorrection < 1.0;
 
     if (import.meta.env.DEV) {
-      console.log(`  Δ = ${delta.toFixed(2)} dB ${converged ? '✅ CONVERGED' : ''}`);
+      console.log(`  Δ = ${delta.toFixed(2)} dB | max|corr| = ${maxCorrection.toFixed(1)} dB ${isStable ? '✅ CONVERGED' : ''}`);
     }
 
     // Update delta label
@@ -1919,7 +1972,7 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
       calibrationDelta.textContent = 'Δ ' + delta.toFixed(1) + ' dB';
     }
 
-    if (converged) {
+    if (isStable) {
       onCalibrationComplete(result);
     }
   }
@@ -2037,6 +2090,8 @@ function stopCalibration() {
   }
 
   calibrationRunning = false;
+  activeEQFilters = null;
+  cumulativeEQGains = null;
 
   // UI: show calibrate, hide stop
   if (btnCalibrate) btnCalibrate.classList.remove("hidden");

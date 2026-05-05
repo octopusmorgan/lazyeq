@@ -58,7 +58,6 @@ export class PinkNoiseSource {
 
   /**
    * Start playing pink noise in a seamless loop.
-   * Connects internal GainNode output — caller connects to destination.
    */
   start() {
     if (this._source) return; // already playing
@@ -71,8 +70,30 @@ export class PinkNoiseSource {
     this._source = this._ctx.createBufferSource();
     this._source.buffer = buffer;
     this._source.loop = true;
-    this._source.connect(this._gainNode);
+    // Connect through filter chain if set, otherwise direct to gain
+    if (this._filterHead) {
+      this._source.connect(this._filterHead);
+    } else {
+      this._source.connect(this._gainNode);
+    }
     this._source.start();
+  }
+
+  /**
+   * Insert a chain of BiquadFilterNodes between source and gain.
+   * Filters must be pre-connected in series. The first filter becomes
+   * the new connection target for the source; the last connects to gain.
+   *
+   * @param {BiquadFilterNode[]} filters — pre-connected chain (f[0]→f[1]→...→f[n-1])
+   */
+  setFilterChain(filters) {
+    if (!filters || filters.length === 0) {
+      this._filterHead = null;
+      return;
+    }
+    this._filterHead = filters[0];
+    // Ensure last filter connects to gainNode
+    filters[filters.length - 1].connect(this._gainNode);
   }
 
   /**
