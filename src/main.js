@@ -1961,6 +1961,11 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
   const corrected = analyzer.getCorrectedSpectrumFromDB(spectrum);
   if (!corrected) return;
 
+  // Sanitize: replace -Infinity/NaN before pipeline so all downstream gets clean data
+  for (let i = 0; i < corrected.length; i++) {
+    if (!isFinite(corrected[i])) corrected[i] = -120;
+  }
+
   if (import.meta.env.DEV) {
     const bw = analyzer.audioContext.sampleRate / analyzer.analyserNode.fftSize;
     const checkBins = [Math.round(32/bw), Math.round(125/bw), Math.round(1000/bw), Math.round(4000/bw)];
