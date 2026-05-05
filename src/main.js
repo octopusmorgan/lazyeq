@@ -14,7 +14,12 @@ import {
   exportEqMac,
   generateVisualizationData,
   EQMAC_BANDS,
+  getHarmanTargetDB,
 } from "./eqGenerator.js";
+import { PinkNoiseSource } from "./pinkNoise.js";
+import { ConvergenceDetector } from "./convergence.js";
+import { saveProfile, loadProfile } from "./persistence.js";
+import { PINK_NOISE_GAIN, MEASUREMENT_INTERVAL_MS, CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT } from "./constants.js";
 
 /**
  * Convert hex color to RGBA string
@@ -53,6 +58,18 @@ let isRemoteMicActive = false;
 let sweepProcessing = false;
 let sweepProcessTimeout = null;
 
+// Live pink noise calibration state
+let pinkNoise = null;
+let convergenceDetector = null;
+let continuousMeasurement = null;
+let liveSpectrum = null;
+let liveEQGains = null;
+let calibrationRunning = false;
+let calibrationStartTime = 0;
+let lowInputWarningCount = 0;
+let cachedTargetCurve = null; // Pre-computed target curve for live canvas
+let lastMeasurementResult = null; // Best result for stop/partial
+
 // DOM Elements
 const btnNoise = document.getElementById("btn-noise");
 const btnSweep = document.getElementById("btn-sweep");
@@ -70,6 +87,13 @@ const canvasSpectrum = document.getElementById("canvas-spectrum");
 const canvasEstimated = document.getElementById("canvas-estimated");
 const canvasEq = document.getElementById("canvas-eq");
 const canvasLive = document.getElementById("canvas-live");
+
+// Live calibration DOM elements
+const btnCalibrate = document.getElementById("btn-calibrate");
+const btnStopCalibration = document.getElementById("btn-stop-calibration");
+const statusCalibration = document.getElementById("status-calibration");
+const calibrationDelta = document.getElementById("calibration-delta");
+const resultsSection = document.getElementById("results-section");
 
 // Progress bar elements
 const noiseProgressContainer = document.getElementById("noise-progress-container");
@@ -973,7 +997,8 @@ function resizeCanvases() {
   });
 }
 
-// Step 1: Capture noise floor
+// Step 1: Capture noise floor (legacy sweep path — preserved for Advanced mode)
+if (btnNoise) {
 btnNoise.addEventListener("click", async () => {
   try {
     // Auto-load devices on first user gesture if not loaded yet
@@ -1076,6 +1101,7 @@ await analyzer.captureNoiseFloor(5);
     btnNoise.disabled = false;
   }
 });
+} // end btnNoise guard
 
 /**
  * Compute frequency spectrum from recorded PCM using Welch's method.
@@ -1179,7 +1205,8 @@ function computeSpectrumFromPCM(pcm, sampleRate, targetBins) {
   return result;
 }
 
-// Step 2: Play Sine Sweep (supports multi-sweep averaging)
+// Step 2: Play Sine Sweep (supports multi-sweep averaging) — legacy path preserved for Advanced mode
+if (btnSweep) {
 btnSweep.addEventListener("click", async () => {
   try {
     // If remote mic mode is active but stream hasn't arrived yet, wait for it
@@ -1421,8 +1448,10 @@ btnSweep.addEventListener("click", async () => {
     btnSweep.disabled = false;
   }
 });
+} // end btnSweep guard
 
-// Stop and analyze
+// Stop and analyze (legacy sweep path — preserved for Advanced mode)
+if (btnStop) {
 btnStop.addEventListener("click", async () => {
   if (animationFrame) {
     cancelAnimationFrame(animationFrame);
@@ -1453,6 +1482,7 @@ btnStop.addEventListener("click", async () => {
     btnSweep.disabled = false;
   }
 });
+} // end btnStop guard
 
 // Practical target curve — gentle "house curve" tilt that matches real listening preference.
 // Unlike a pure flat target, this allows natural bass warmth and smooth treble roll-off.
@@ -1723,6 +1753,465 @@ async function processSweepResults() {
   sweepProcessing = false;
 }
 
+// ─── Live Pink Noise Calibration Flow ─────────────────────────────────
+
+/**
+ * Pre-compute the target curve for the live canvas (cached, drawn once per frame).
+ */
+function computeTargetCurveCache() {
+  if (cachedTargetCurve) return cachedTargetCurve;
+
+  // Build a synthetic "target spectrum" — Harman target values mapped to FFT bins
+  const binCount = FFT_SIZE / 2;
+  const binWidth = analyzer.audioContext.sampleRate / analyzer.analyserNode.fftSize;
+  const targetSpectrum = new Float32Array(binCount);
+  for (let i = 0; i < binCount; i++) {
+    const freq = i * binWidth;
+    targetSpectrum[i] = getHarmanTargetDB(Math.max(20, Math.min(20000, freq)));
+  }
+
+  const labels = analyzer.getLinearFrequencyLabels();
+  cachedTargetCurve = generateVisualizationData(targetSpectrum, labels);
+  return cachedTargetCurve;
+}
+
+/**
+ * Start live pink noise calibration.
+ */
+function startLiveCalibration() {
+  if (calibrationRunning) return;
+
+  calibrationRunning = true;
+  calibrationStartTime = performance.now();
+  lowInputWarningCount = 0;
+  lastMeasurementResult = null;
+  liveSpectrum = null;
+  liveEQGains = null;
+
+  // UI: show stop, hide calibrate
+  if (btnCalibrate) btnCalibrate.classList.add("hidden");
+  if (btnStopCalibration) btnStopCalibration.classList.remove("hidden");
+  if (calibrationDelta) calibrationDelta.classList.remove("hidden");
+  if (statusCalibration) {
+    statusCalibration.textContent = "Playing pink noise — listening to your room...";
+    statusCalibration.className = "status recording";
+  }
+
+  // Ensure analyzer is initialized
+  const ctx = initAudioContext();
+  if (!analyzer) {
+    analyzer = new SpectrumAnalyzer();
+  }
+
+  // Reset convergence detector
+  convergenceDetector = new ConvergenceDetector(CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT);
+
+  // Start pink noise
+  pinkNoise = new PinkNoiseSource(ctx);
+  pinkNoise.start();
+
+  // Initialize mic and start continuous measurement
+  initAnalyzer(ctx).then(() => {
+    // Pre-compute target curve now that analyzer has frequency labels
+    computeTargetCurveCache();
+
+    continuousMeasurement = analyzer.measureContinuous((result) => {
+      onMeasurementCallback(result);
+    }, MEASUREMENT_INTERVAL_MS);
+
+    // Start canvas rendering loop
+    requestAnimationFrame(renderLiveCalibration);
+  }).catch((err) => {
+    console.error("Failed to start live calibration:", err);
+    stopCalibration();
+    if (statusCalibration) {
+      statusCalibration.textContent = "Could not access microphone. Check permissions and try again.";
+      statusCalibration.className = "status danger";
+    }
+  });
+}
+
+/**
+ * Core measurement callback — called every ~500ms by measureContinuous.
+ * @param {{spectrum: Float32Array, rms: number, elapsedMs: number}} result
+ */
+function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
+  // Low-input warning
+  if (rms < -60) {
+    lowInputWarningCount++;
+    if (lowInputWarningCount >= 3 && statusCalibration) {
+      statusCalibration.textContent = "Room seems quiet — try moving closer to the speaker or increasing your speaker volume.";
+      statusCalibration.className = "status danger";
+    }
+  } else {
+    lowInputWarningCount = 0;
+    if (statusCalibration && statusCalibration.className === "status danger") {
+      statusCalibration.textContent = "Playing pink noise — listening to your room...";
+      statusCalibration.className = "status recording";
+    }
+  }
+
+  // Process through the existing pipeline (NO 1/f compensation for pink noise)
+  const corrected = analyzer.getCorrectedSpectrumFromDB(spectrum);
+  if (!corrected) return;
+
+  const result = _processMeasurementResults(corrected, {
+    method: 'pink-noise',
+    gainLimits: { maxGain: 4, maxCut: -4, bassMax: 4 },
+    smoothingFactor: 2.5,
+    effectiveRange: { low: 100, high: 8000 }
+  });
+
+  // Update shared state for canvas rendering
+  liveSpectrum = spectrum;
+  liveEQGains = result.gains;
+  lastMeasurementResult = result;
+
+  // Feed convergence detector
+  if (convergenceDetector) {
+    const { converged, delta } = convergenceDetector.push(result.gains);
+
+    // Update delta label
+    if (calibrationDelta) {
+      calibrationDelta.textContent = 'Δ ' + delta.toFixed(1) + ' dB';
+    }
+
+    if (converged) {
+      onCalibrationComplete(result);
+    }
+  }
+}
+
+/**
+ * Called when convergence is detected.
+ */
+function onCalibrationComplete(result) {
+  // Stop pink noise and measurement
+  if (pinkNoise) {
+    pinkNoise.stop();
+    pinkNoise = null;
+  }
+  if (continuousMeasurement) {
+    continuousMeasurement.stop();
+    continuousMeasurement = null;
+  }
+
+  calibrationRunning = false;
+
+  // Save profile
+  saveProfile({ gains: result.gains, timestamp: Date.now(), type: 'pink-noise' });
+
+  // Show results
+  showResults(result);
+
+  if (statusCalibration) {
+    statusCalibration.textContent = "Calibration complete! Your EQ is ready.";
+    statusCalibration.className = "status done";
+  }
+}
+
+/**
+ * Display calibration results on the existing canvases.
+ */
+function showResults(result) {
+  const { visData, gains } = result;
+
+  // Render on existing canvases using existing functions
+  resizeCanvases();
+
+  // Spectrum canvas: show the corrected room response
+  if (canvasSpectrum && liveSpectrum) {
+    const corrected = analyzer.getCorrectedSpectrumFromDB(liveSpectrum);
+    if (corrected) {
+      const specCtx = canvasSpectrum.getContext("2d");
+      renderSpectrum(specCtx, corrected, "#ff6b6b");
+    }
+  }
+
+  // Estimated canvas: response after EQ
+  if (canvasEstimated && result.normalizedResponse) {
+    const smoothedArr = Array.from(result.normalizedResponse);
+    const estimatedResponse = smoothedArr.map((v, i) => v + (gains[i] || 0));
+    const estCtx = canvasEstimated.getContext("2d");
+    renderSpectrum(estCtx, estimatedResponse, "#00f5d4");
+  }
+
+  // EQ canvas
+  if (canvasEq && gains) {
+    const eqCtx = canvasEq.getContext("2d");
+    renderEQCurve(eqCtx, gains);
+  }
+
+  // EQ table
+  populateEQTable(visData, gains);
+
+  // Enable export buttons
+  if (btnExportWavelet) {
+    btnExportWavelet.disabled = false;
+    btnExportWavelet.dataset.gains = JSON.stringify(gains);
+  }
+  if (btnExportEqMac) {
+    btnExportEqMac.disabled = false;
+    btnExportEqMac.dataset.gains = JSON.stringify(gains);
+    btnExportEqMac.dataset.visData = JSON.stringify(visData);
+  }
+
+  // Show results section
+  if (resultsSection) resultsSection.classList.remove("hidden");
+
+  // UI: show calibrate, hide stop
+  if (btnCalibrate) btnCalibrate.classList.remove("hidden");
+  if (btnStopCalibration) btnStopCalibration.classList.add("hidden");
+
+  // Release microphone
+  try {
+    analyzer?.destroy();
+  } finally {
+    analyzer = null;
+  }
+
+  // Suspend audio context
+  setTimeout(() => {
+    if (audioContext && audioContext.state !== 'closed') {
+      audioContext.suspend().catch(() => {});
+    }
+  }, 100);
+}
+
+/**
+ * Stop calibration manually (user clicks Stop or error occurs).
+ */
+function stopCalibration() {
+  if (!calibrationRunning && !pinkNoise && !continuousMeasurement) return;
+
+  if (pinkNoise) {
+    pinkNoise.stop();
+    pinkNoise = null;
+  }
+  if (continuousMeasurement) {
+    continuousMeasurement.stop();
+    continuousMeasurement = null;
+  }
+
+  calibrationRunning = false;
+
+  // UI: show calibrate, hide stop
+  if (btnCalibrate) btnCalibrate.classList.remove("hidden");
+  if (btnStopCalibration) btnStopCalibration.classList.add("hidden");
+  if (calibrationDelta) calibrationDelta.classList.add("hidden");
+
+  // Use best available result if partial measurement exists
+  if (lastMeasurementResult && convergenceDetector && convergenceDetector.windowCount >= 2) {
+    if (statusCalibration) {
+      statusCalibration.textContent = "Calibration stopped early. Showing best available result.";
+      statusCalibration.className = "status info";
+    }
+    saveProfile({ gains: lastMeasurementResult.gains, timestamp: Date.now(), type: 'pink-noise' });
+    showResults(lastMeasurementResult);
+  } else {
+    if (statusCalibration) {
+      statusCalibration.textContent = "Calibration stopped.";
+      statusCalibration.className = "status";
+    }
+  }
+
+  // Release microphone
+  try {
+    analyzer?.destroy();
+  } catch { /* ignore */ }
+  analyzer = null;
+}
+
+/**
+ * Live canvas rendering — called via requestAnimationFrame.
+ * Draws 3 lines: target curve (cached), spectrum (updating), EQ (converging).
+ */
+function renderLiveCalibration(timestamp) {
+  if (!calibrationRunning) return;
+
+  const canvas = canvasLive;
+  if (!canvas) return;
+
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const width = rect.width;
+  const height = rect.height;
+
+  // Clear
+  ctx.clearRect(0, 0, width * dpr, height * dpr);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(dpr, dpr);
+
+  // Background
+  ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+  ctx.fillRect(0, 0, width, height);
+
+  // Grid lines
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+  ctx.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) {
+    const gy = (g / 4) * height;
+    ctx.beginPath();
+    ctx.moveTo(0, gy);
+    ctx.lineTo(width, gy);
+    ctx.stroke();
+  }
+
+  // Zero line (center)
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(0, height / 2);
+  ctx.lineTo(width, height / 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Y-axis range: -15 to +15 dB, centered at 0
+  const minDB = -15;
+  const maxDB = 15;
+  const dbRange = maxDB - minDB;
+
+  // Log-frequency X mapping
+  const logMin = Math.log10(20);
+  const logMax = Math.log10(20000);
+
+  function freqToX(freq) {
+    const logFreq = Math.log10(Math.max(20, Math.min(20000, freq)));
+    return ((logFreq - logMin) / (logMax - logMin)) * width;
+  }
+
+  function dbToY(db) {
+    const clamped = Math.max(minDB, Math.min(maxDB, db));
+    return height - ((clamped - minDB) / dbRange) * height;
+  }
+
+  function drawLine(points, color, dashed = false, alpha = 1) {
+    if (!points || points.length < 2) return;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    if (dashed) ctx.setLineDash([5, 5]);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    for (let i = 0; i < points.length; i++) {
+      const x = freqToX(points[i].x);
+      const y = dbToY(points[i].y);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Line 1: Target curve (cached, dashed, semi-transparent)
+  if (cachedTargetCurve && cachedTargetCurve.length > 0) {
+    drawLine(cachedTargetCurve, "#6a6a7a", true, 0.4);
+  }
+
+  // Line 2: Pink noise spectrum (updating, coral)
+  if (liveSpectrum && analyzer) {
+    const spectrumPoints = generateVisualizationData(liveSpectrum, analyzer.getLinearFrequencyLabels());
+    drawLine(spectrumPoints, "#ff6b6b");
+  }
+
+  // Line 3: EQ correction curve (converging, cyan)
+  if (liveEQGains && cachedTargetCurve) {
+    // Map EQ gains (64 points) to frequency points using the same log spacing
+    const eqPoints = [];
+    for (let i = 0; i < liveEQGains.length; i++) {
+      const freq = 20 * Math.pow(20000 / 20, i / (liveEQGains.length - 1));
+      eqPoints.push({ x: freq, y: liveEQGains[i] });
+    }
+    drawLine(eqPoints, "#00f5d4");
+  }
+
+  // Legend (top-left corner)
+  ctx.font = "10px 'JetBrains Mono', monospace";
+  const legendX = 10;
+  let legendY = 18;
+  const legendItems = [
+    { color: "#6a6a7a", label: "Target", dashed: true },
+    { color: "#ff6b6b", label: "Room Response" },
+    { color: "#00f5d4", label: "Correction" },
+  ];
+  for (const item of legendItems) {
+    ctx.save();
+    ctx.globalAlpha = item.dashed ? 0.4 : 1;
+    ctx.strokeStyle = item.color;
+    ctx.lineWidth = 2;
+    if (item.dashed) ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(legendX, legendY);
+    ctx.lineTo(legendX + 16, legendY);
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = item.color;
+    ctx.fillText(item.label, legendX + 22, legendY + 4);
+    legendY += 16;
+  }
+
+  // Delta label (bottom-right)
+  if (calibrationDelta && calibrationDelta.textContent) {
+    const deltaText = calibrationDelta.textContent;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+    ctx.font = "bold 11px 'JetBrains Mono', monospace";
+    const textWidth = ctx.measureText(deltaText).width;
+    ctx.fillText(deltaText, width - textWidth - 10, height - 10);
+  }
+
+  // Continue loop
+  requestAnimationFrame(renderLiveCalibration);
+}
+
+/**
+ * Restore a persisted calibration profile on app init.
+ */
+function restorePersistedProfile() {
+  const profile = loadProfile();
+  if (!profile || !profile.gains) return;
+
+  const ageHours = (Date.now() - profile.timestamp) / (1000 * 60 * 60);
+
+  if (statusCalibration) {
+    if (ageHours < 24) {
+      statusCalibration.textContent = "Loaded saved calibration (" + Math.round(ageHours) + "h ago).";
+      statusCalibration.className = "status done";
+    } else {
+      statusCalibration.textContent = "Saved calibration is " + Math.round(ageHours) + "h old — consider recalibrating.";
+      statusCalibration.className = "status info";
+    }
+  }
+
+  // Create a synthetic result to display
+  const visData = [];
+  for (let i = 0; i < 64; i++) {
+    const freq = 20 * Math.pow(20000 / 20, i / 63);
+    visData.push({ x: freq, y: 0 }); // Unknown response, just show EQ
+  }
+
+  const result = { visData, gains: profile.gains, normalizedResponse: new Float32Array(64) };
+
+  // Show results
+  showResults(result);
+
+  // Override status message
+  if (statusCalibration) {
+    if (ageHours < 24) {
+      statusCalibration.textContent = "Loaded saved calibration (" + Math.round(ageHours) + "h ago). Ready to use or recalibrate.";
+      statusCalibration.className = "status done";
+    } else {
+      statusCalibration.textContent = "Loaded saved calibration (" + Math.round(ageHours) + "h old). Results shown — recalibrate for best accuracy.";
+      statusCalibration.className = "status info";
+    }
+  }
+}
+
+// ─── End Live Pink Noise Calibration Flow ─────────────────────────────
+
 // Export handlers
 btnExportWavelet.addEventListener("click", () => {
   const gains = JSON.parse(btnExportWavelet.dataset.gains);
@@ -1748,9 +2237,29 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", resizeCanvases);
 }
 
+// ─── Live Calibration Event Wiring ────────────────────────────────────
+
+if (btnCalibrate) {
+  btnCalibrate.addEventListener("click", () => {
+    startLiveCalibration();
+  });
+}
+
+if (btnStopCalibration) {
+  btnStopCalibration.addEventListener("click", () => {
+    stopCalibration();
+  });
+}
+
+// ─── End Live Calibration Event Wiring ────────────────────────────────
+
 // Initialize all canvases
 resizeCanvases();
-if (import.meta.env.DEV) console.log("lazyEq (Sine Sweep mode) initialized");
+
+// Restore persisted profile on init
+restorePersistedProfile();
+
+if (import.meta.env.DEV) console.log("lazyEq (Pink Noise mode) initialized");
 
 /** Dist verification hook — string must remain in bundle for `npm test` (test.js). */
 globalThis.lazyEqTest = { mode: "sine-sweep", version: "1.0.0" };
