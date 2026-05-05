@@ -2007,6 +2007,52 @@ function onCalibrationComplete(result) {
 }
 
 /**
+ * Build a partial result from the last measurement and cumulative EQ gains.
+ * Interpolates the 8 filter-band cumulative gains to the 64 log-spaced visData points.
+ *
+ * @param {Object} lastResult — result from last _processMeasurementResults call
+ * @param {Float32Array|null} cumulativeGains — 8-band cumulative EQ
+ * @returns {Object} result compatible with showResults()
+ */
+function _buildPartialResult(lastResult, cumulativeGains) {
+  if (!cumulativeGains) return lastResult;
+
+  const { visData, normalizedResponse } = lastResult;
+  const gains = new Float32Array(visData.length);
+
+  for (let i = 0; i < visData.length; i++) {
+    const freq = visData[i].x;
+    // Interpolate from 8 filter bands to this frequency
+    gains[i] = _interpolateEQGains(freq, cumulativeGains);
+  }
+
+  return { visData, normalizedResponse, gains, rangeAvg: lastResult.rangeAvg };
+}
+
+/**
+ * Interpolate cumulative EQ gain at a given frequency from the 8 filter bands.
+ * Uses log-frequency linear interpolation. Extrapolates flat beyond the band edges.
+ *
+ * @param {number} freq — target frequency in Hz
+ * @param {Float32Array} gains — 8-band cumulative gains
+ * @returns {number} interpolated gain in dB
+ */
+function _interpolateEQGains(freq, gains) {
+  const freqs = ACTIVE_EQ_FREQS;
+  if (freq <= freqs[0]) return gains[0];
+  if (freq >= freqs[freqs.length - 1]) return gains[gains.length - 1];
+
+  for (let i = 0; i < freqs.length - 1; i++) {
+    if (freq >= freqs[i] && freq <= freqs[i + 1]) {
+      const ratio = (Math.log10(freq) - Math.log10(freqs[i])) /
+                    (Math.log10(freqs[i + 1]) - Math.log10(freqs[i]));
+      return gains[i] + ratio * (gains[i + 1] - gains[i]);
+    }
+  }
+  return 0;
+}
+
+/**
  * Display calibration results on the existing canvases.
  */
 function showResults(result) {
@@ -2089,6 +2135,9 @@ function stopCalibration() {
     continuousMeasurement = null;
   }
 
+  // Save cumulative EQ before cleaning up state
+  const savedCumulativeGains = cumulativeEQGains ? new Float32Array(cumulativeEQGains) : null;
+
   calibrationRunning = false;
   activeEQFilters = null;
   cumulativeEQGains = null;
@@ -2101,11 +2150,13 @@ function stopCalibration() {
   // Use best available result if partial measurement exists
   if (lastMeasurementResult && convergenceDetector && convergenceDetector.windowCount >= 2) {
     if (statusCalibration) {
-      statusCalibration.textContent = "Calibration stopped early. Showing best available result.";
+      statusCalibration.textContent = "Calibration stopped early. Showing EQ from partial measurement.";
       statusCalibration.className = "status info";
     }
-    saveProfile({ gains: lastMeasurementResult.gains, timestamp: Date.now(), type: 'pink-noise' });
-    showResults(lastMeasurementResult);
+    // Build result using cumulative EQ gains mapped to visData points
+    const partialResult = _buildPartialResult(lastMeasurementResult, savedCumulativeGains);
+    saveProfile({ gains: partialResult.gains, timestamp: Date.now(), type: 'pink-noise' });
+    showResults(partialResult);
   } else {
     if (statusCalibration) {
       statusCalibration.textContent = "Calibration stopped.";
