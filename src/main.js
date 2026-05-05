@@ -2336,45 +2336,14 @@ function restorePersistedProfile() {
     }
   }
 
-  // Create a synthetic result to display graphs
-  const visData = [];
-  for (let i = 0; i < 64; i++) {
-    const freq = 20 * Math.pow(20000 / 20, i / 63);
-    visData.push({ x: freq, y: 0 }); // Unknown response, just show EQ
-  }
-
-  const result = { visData, gains: profile.gains, normalizedResponse: new Float32Array(64) };
-
-  // Render graphs but keep section hidden
-  if (resultsSection) resultsSection.classList.remove("hidden");
-  resizeCanvases();
-
-  // Estimated canvas: response after EQ (using normalized response of zero + gains)
-  if (canvasEstimated && result.normalizedResponse) {
-    const smoothedArr = Array.from(result.normalizedResponse);
-    const estimatedResponse = smoothedArr.map((v, i) => v + (result.gains[i] || 0));
-    const estCtx = canvasEstimated.getContext("2d");
-    renderSpectrum(estCtx, estimatedResponse, "#00f5d4");
-  }
-
-  // EQ canvas
-  if (canvasEq && result.gains) {
-    const eqCtx = canvasEq.getContext("2d");
-    renderEQCurve(eqCtx, result.gains);
-  }
-
-  // EQ table
-  populateEQTable(visData, result.gains);
-
-  // Enable export buttons
+  // Enable export with saved profile (graphs shown only after calibration)
   if (btnExportWavelet) {
     btnExportWavelet.disabled = false;
-    btnExportWavelet.dataset.gains = JSON.stringify(result.gains);
+    btnExportWavelet.dataset.gains = JSON.stringify(profile.gains);
   }
   if (btnExportEqMac) {
     btnExportEqMac.disabled = false;
-    btnExportEqMac.dataset.gains = JSON.stringify(result.gains);
-    btnExportEqMac.dataset.visData = JSON.stringify(visData);
+    btnExportEqMac.dataset.gains = JSON.stringify(profile.gains);
   }
 }
 
