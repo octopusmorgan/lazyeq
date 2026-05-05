@@ -2317,6 +2317,25 @@ function renderLiveCalibration(timestamp, final = false) {
     ctx.fillText(deltaText, width - textWidth - 10, height - 10);
   }
 
+  // Frequency labels (bottom axis, log-spaced)
+  const freqLabels = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
+  ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+  ctx.font = "9px 'JetBrains Mono', monospace";
+  ctx.textAlign = "center";
+  for (const freq of freqLabels) {
+    const x = freqToX(freq);
+    const label = freq >= 1000 ? (freq / 1000) + "k" : freq + "Hz";
+    ctx.fillText(label, x, height - 20);
+    // Small tick mark
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, height - 2);
+    ctx.lineTo(x, height - 8);
+    ctx.stroke();
+  }
+  ctx.textAlign = "start";
+
   // Continue loop unless this is the final frame
   if (final !== true) {
     requestAnimationFrame(renderLiveCalibration);
