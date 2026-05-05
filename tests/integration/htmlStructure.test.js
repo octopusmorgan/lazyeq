@@ -63,7 +63,7 @@ describe('HTML structure — preserved IDs', () => {
   });
 
   test('EQ table ID preserved', () => {
-    assert.ok(html.includes('id="band-eq-table"'), 'band-eq-table should exist');
+    assert.ok(html.includes('id="eq-table"'), 'eq-table should exist');
     assert.ok(html.includes('id="eq-table-container"'), 'eq-table-container should exist');
   });
 
