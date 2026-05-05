@@ -1995,14 +1995,14 @@ function onCalibrationComplete(result) {
 
   calibrationRunning = false;
 
-  // Render final frame on live canvas before stopping the loop
-  renderLiveCalibrationFinal();
-
   // Save profile
   saveProfile({ gains: result.gains, timestamp: Date.now(), type: 'pink-noise' });
 
   // Show results
   showResults(result);
+
+  // Render final frame on live canvas AFTER showResults (so resizeCanvases doesn't clear it)
+  renderLiveCalibrationFinal();
 
   if (statusCalibration) {
     statusCalibration.textContent = "Calibration complete! Your EQ is ready.";
@@ -2146,9 +2146,6 @@ function stopCalibration() {
   activeEQFilters = null;
   cumulativeEQGains = null;
 
-  // Render final frame on live canvas
-  renderLiveCalibrationFinal();
-
   // UI: show calibrate, hide stop
   if (btnCalibrate) btnCalibrate.classList.remove("hidden");
   if (btnStopCalibration) btnStopCalibration.classList.add("hidden");
@@ -2164,6 +2161,7 @@ function stopCalibration() {
     const partialResult = _buildPartialResult(lastMeasurementResult, savedCumulativeGains);
     saveProfile({ gains: partialResult.gains, timestamp: Date.now(), type: 'pink-noise' });
     showResults(partialResult);
+    renderLiveCalibrationFinal();
   } else {
     if (statusCalibration) {
       statusCalibration.textContent = "Calibration stopped.";
