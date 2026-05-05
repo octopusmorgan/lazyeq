@@ -926,10 +926,6 @@ function adaptiveSmooth(data, smoothingFactor = 1.0) {
 
 // Populate EQ table
 function populateEQTable(visData, gains) {
-  if (import.meta.env.DEV) {
-    const sample = visData.slice(0, 5).map(p => `${p.x.toFixed(0)}Hz:${p.y.toFixed(1)}`);
-    console.log(`[populateEQTable] visData[0..4]:`, sample.join(' | '));
-  }
   const table = document.getElementById("eq-table");
   if (!table) return;
 
@@ -1915,10 +1911,6 @@ function startLiveCalibration() {
 function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
   // Timeout check: if we've exceeded the watchdog, stop with last result
   if (elapsedMs > CALIBRATION_TIMEOUT_MS) {
-    if (import.meta.env.DEV && lastMeasurementResult) {
-      const sample = lastMeasurementResult.visData.slice(0, 4).map(p => `${p.x.toFixed(0)}Hz:${p.y.toFixed(1)}`);
-      console.log(`[timeout] lastMeasurementResult.visData[0..3]:`, sample.join(' | '));
-    }
     if (lastMeasurementResult) {
       onCalibrationComplete(lastMeasurementResult, { timedOut: true });
     } else {
@@ -1971,24 +1963,12 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
     if (!isFinite(corrected[i])) corrected[i] = -120;
   }
 
-  if (import.meta.env.DEV) {
-    const bw = analyzer.audioContext.sampleRate / analyzer.analyserNode.fftSize;
-    const checkBins = [Math.round(32/bw), Math.round(125/bw), Math.round(1000/bw), Math.round(4000/bw)];
-    const vals = checkBins.map(b => isFinite(corrected[b]) ? corrected[b].toFixed(1) : 'INF');
-    console.log(`[pipeline] corrected at 32/125/1k/4kHz bins(${checkBins.join(',')}):`, vals.join(' | '));
-  }
-
   const result = _processMeasurementResults(corrected, {
     method: 'pink-noise',
     gainLimits: { maxGain: 4, maxCut: -4, bassMax: 4 },
     smoothingFactor: 2.5,
     effectiveRange: { low: 100, high: 8000 }
   });
-
-  if (import.meta.env.DEV) {
-    const sample = result.visData.slice(0, 6).map(p => `(${p.x.toFixed(0)}Hz:${isFinite(p.y)?p.y.toFixed(1):'INF'})`).join(' ');
-    console.log(`[pipeline] visData[0..5]:`, sample);
-  }
 
   // ── Active EQ: interpolate gains to filter bands and update ──────────
   const deltaGains = new Float32Array(ACTIVE_EQ_FREQS.length);
