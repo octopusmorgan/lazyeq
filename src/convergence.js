@@ -11,11 +11,14 @@ export class ConvergenceDetector {
   /**
    * @param {number} thresholdDb — max mean delta to consider converged (default 0.5)
    * @param {number} windowCount — number of windows to track (default 3)
+   * @param {number} minMeasurements — minimum valid pushes before convergence allowed (default 0)
    */
-  constructor(thresholdDb = 0.5, windowCount = 3) {
+  constructor(thresholdDb = 0.5, windowCount = 3, minMeasurements = 0) {
     this._threshold = thresholdDb;
     this._windowCount = windowCount;
+    this._minMeasurements = minMeasurements;
     this._windows = [];
+    this._validPushCount = 0;
   }
 
   /**
@@ -26,6 +29,7 @@ export class ConvergenceDetector {
   push(gains) {
     // Clone to avoid mutation
     this._windows.push(Float32Array.from(gains));
+    this._validPushCount++;
 
     // Trim to window count
     if (this._windows.length > this._windowCount) {
@@ -46,6 +50,11 @@ export class ConvergenceDetector {
       sum += Math.abs(current[i] - previous[i]);
     }
     const delta = sum / len;
+
+    // Block convergence until minimum measurement count is reached
+    if (this._validPushCount < this._minMeasurements) {
+      return { converged: false, delta };
+    }
 
     // Check if all recent comparisons are below threshold
     const consecutiveStable = this._countConsecutiveStable();
@@ -84,6 +93,7 @@ export class ConvergenceDetector {
    */
   reset() {
     this._windows = [];
+    this._validPushCount = 0;
   }
 
   /**
