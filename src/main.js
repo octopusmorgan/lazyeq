@@ -1884,13 +1884,12 @@ function startLiveCalibration() {
     // Set 30s watchdog timeout
     calibrationTimeout = setTimeout(() => {
       if (calibrationRunning) {
-        const timeoutResult = bestResult || lastMeasurementResult;
-        if (timeoutResult) {
-          onCalibrationComplete(timeoutResult, { timedOut: true });
+        if (lastMeasurementResult) {
+          onCalibrationComplete(lastMeasurementResult, { timedOut: true });
         } else {
           stopCalibration();
           if (statusCalibration) {
-            statusCalibration.textContent = "Calibration timed out with no usable data. Try moving closer to the speaker.";
+            statusCalibration.textContent = "Calibration timed out with no usable data.";
             statusCalibration.className = "status danger";
           }
         }
