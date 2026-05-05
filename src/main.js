@@ -1914,16 +1914,18 @@ function startLiveCalibration() {
  * @param {{spectrum: Float32Array, rms: number, elapsedMs: number}} result
  */
 function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
-  // Timeout check: if we've exceeded the watchdog, stop with best result
+  // Timeout check: if we've exceeded the watchdog, stop with last result
   if (elapsedMs > CALIBRATION_TIMEOUT_MS) {
-    const timeoutResult = bestResult || lastMeasurementResult;
-    if (timeoutResult) {
-      onCalibrationComplete(timeoutResult, { timedOut: true });
+    if (import.meta.env.DEV && lastMeasurementResult) {
+      const sample = lastMeasurementResult.visData.slice(0, 4).map(p => `${p.x.toFixed(0)}Hz:${p.y.toFixed(1)}`);
+      console.log(`[timeout] lastMeasurementResult.visData[0..3]:`, sample.join(' | '));
+    }
+    if (lastMeasurementResult) {
+      onCalibrationComplete(lastMeasurementResult, { timedOut: true });
     } else {
-      // No valid measurements captured — all windows were SNR-gated
       stopCalibration();
       if (statusCalibration) {
-        statusCalibration.textContent = "Calibration timed out with no usable data. Try moving closer to the speaker.";
+        statusCalibration.textContent = "Calibration timed out with no usable data.";
         statusCalibration.className = "status danger";
       }
     }
