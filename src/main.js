@@ -1536,7 +1536,10 @@ function _processMeasurementResults(spectrum, options = {}) {
   // Sanitize: replace -Infinity/NaN with noise floor to avoid polluting smoothing
   const NOISE_FLOOR_DB = -120;
   for (let i = 0; i < responseArr.length; i++) {
-    if (!isFinite(responseArr[i])) responseArr[i] = NOISE_FLOOR_DB;
+    if (!isFinite(responseArr[i])) {
+      responseArr[i] = NOISE_FLOOR_DB;
+      visData[i].y = NOISE_FLOOR_DB; // also fix the source so EQ table shows values
+    }
   }
 
   const smoothedResponse = adaptiveSmooth(responseArr, smoothingFactor);
