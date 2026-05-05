@@ -1533,6 +1533,12 @@ function _processMeasurementResults(spectrum, options = {}) {
   const responseArr = new Float32Array(visData.length);
   visData.forEach((d, i) => { responseArr[i] = d.y; });
 
+  // Sanitize: replace -Infinity/NaN with noise floor to avoid polluting smoothing
+  const NOISE_FLOOR_DB = -120;
+  for (let i = 0; i < responseArr.length; i++) {
+    if (!isFinite(responseArr[i])) responseArr[i] = NOISE_FLOOR_DB;
+  }
+
   const smoothedResponse = adaptiveSmooth(responseArr, smoothingFactor);
 
   // Normalize: center the measurement so its average in the effective range is 0 dB.
@@ -2154,7 +2160,6 @@ function _interpolateEQGains(freq, gains) {
  */
 function showResults(result, options = {}) {
   const { visData, gains } = result;
-  if (import.meta.env.DEV) console.log("[showResults] called — has gains:", !!gains, "has normalizedResponse:", !!result.normalizedResponse, "has visData:", !!visData);
 
   // Show results section FIRST so canvases have dimensions
   if (resultsSection) resultsSection.classList.remove("hidden");
@@ -2167,11 +2172,8 @@ function showResults(result, options = {}) {
     const corrected = analyzer.getCorrectedSpectrumFromDB(liveSpectrum);
     if (corrected) {
       const specCtx = canvasSpectrum.getContext("2d");
-      if (import.meta.env.DEV) console.log("[showResults] rendering spectrum canvas, size:", canvasSpectrum.width, "x", canvasSpectrum.height);
       renderSpectrum(specCtx, corrected, "#ff6b6b");
     }
-  } else if (import.meta.env.DEV) {
-    console.log("[showResults] spectrum canvas SKIPPED — canvasSpectrum:", !!canvasSpectrum, "liveSpectrum:", !!liveSpectrum);
   }
 
   // Estimated canvas: response after EQ
@@ -2179,12 +2181,6 @@ function showResults(result, options = {}) {
     const smoothedArr = Array.from(result.normalizedResponse);
     const estimatedResponse = smoothedArr.map((v, i) => v + (gains[i] || 0));
     const estCtx = canvasEstimated.getContext("2d");
-    if (import.meta.env.DEV) {
-      const sampleGains = gains.slice(0, 5).map(g => g.toFixed(1)).join(', ');
-      const sampleResp = smoothedArr.slice(0, 5).map(v => v.toFixed(1)).join(', ');
-      const sampleEst = estimatedResponse.slice(0, 5).map(v => v.toFixed(1)).join(', ');
-      console.log("[showResults] estimated: gains[0..4]=", sampleGains, "| normResp[0..4]=", sampleResp, "| estimated[0..4]=", sampleEst);
-    }
     renderSpectrum(estCtx, estimatedResponse, "#00f5d4");
   } else if (import.meta.env.DEV) {
     console.log("[showResults] estimated canvas SKIPPED — canvasEstimated:", !!canvasEstimated, "normalizedResponse:", !!result.normalizedResponse);
