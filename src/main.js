@@ -1795,10 +1795,11 @@ function startLiveCalibration() {
   liveSpectrum = null;
   liveEQGains = null;
 
-  // UI: show stop, hide calibrate
+  // UI: show stop, hide calibrate, hide previous results
   if (btnCalibrate) btnCalibrate.classList.add("hidden");
   if (btnStopCalibration) btnStopCalibration.classList.remove("hidden");
   if (calibrationDelta) calibrationDelta.classList.remove("hidden");
+  if (resultsSection) resultsSection.classList.add("hidden");
   if (statusCalibration) {
     statusCalibration.textContent = "Playing pink noise — listening to your room...";
     statusCalibration.className = "status recording";
