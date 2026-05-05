@@ -396,6 +396,8 @@ async function initAnalyzer(ctx) {
   } else {
     await analyzer.init(selectedMicDeviceId, ctx);
     if (import.meta.env.DEV) console.log("[Analyzer] Using LOCAL mic:", selectedMicDeviceId);
+    // Permission granted — refresh device list to get proper labels
+    await loadDevices();
   }
 }
 
@@ -2255,6 +2257,9 @@ if (btnStopCalibration) {
 
 // Initialize all canvases
 resizeCanvases();
+
+// Populate device list on init (generic labels until permission granted)
+loadDevices();
 
 // Restore persisted profile on init
 restorePersistedProfile();
