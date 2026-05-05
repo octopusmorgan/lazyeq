@@ -1894,7 +1894,17 @@ function startLiveCalibration() {
 function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
   // Timeout check: if we've exceeded the watchdog, stop with best result
   if (elapsedMs > CALIBRATION_TIMEOUT_MS) {
-    onCalibrationComplete(bestResult || lastMeasurementResult, { timedOut: true });
+    const timeoutResult = bestResult || lastMeasurementResult;
+    if (timeoutResult) {
+      onCalibrationComplete(timeoutResult, { timedOut: true });
+    } else {
+      // No valid measurements captured — all windows were SNR-gated
+      stopCalibration();
+      if (statusCalibration) {
+        statusCalibration.textContent = "Calibration timed out with no usable data. Try moving closer to the speaker.";
+        statusCalibration.className = "status danger";
+      }
+    }
     return;
   }
 
@@ -1904,7 +1914,7 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
     const snr = rms - noiseFloorRMS;
     if (snr < SNR_THRESHOLD_DB) {
       consecutiveSNRSkips++;
-      if (consecutiveSNRSkips > 5 && statusCalibration) {
+      if (consecutiveSNRSkips >= 20 && statusCalibration) {
         statusCalibration.textContent = "Low signal-to-noise ratio — check speaker volume or move closer.";
         statusCalibration.className = "status danger";
       }
