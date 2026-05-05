@@ -247,6 +247,127 @@ h1 {
   line-height: 1.6;
 }
 
+/* ===== CALIBRATION CARD (single-screen layout) ===== */
+
+/* Collapsible details/summary */
+details {
+  margin-bottom: 1rem;
+}
+
+details summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.75rem 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 0.95rem;
+  transition: all 0.2s ease;
+}
+
+details summary:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+details summary::-webkit-details-marker {
+  display: none;
+}
+
+details summary::before {
+  content: '▶';
+  display: inline-block;
+  margin-right: 0.5rem;
+  transition: transform 0.2s ease;
+  font-size: 0.7rem;
+  color: var(--accent-primary);
+}
+
+details[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.details-content {
+  padding: 1rem 0 0.5rem;
+}
+
+/* Calibration controls row */
+.calibration-controls {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.calibration-controls button {
+  flex: 1;
+}
+
+.btn-calibrate {
+  font-size: 1.05rem;
+  padding: 1rem 2rem;
+}
+
+.btn-stop-calibration {
+  font-size: 1.05rem;
+  padding: 1rem 2rem;
+}
+
+/* Live canvas for pink noise calibration */
+.canvas-live {
+  min-height: 130px;
+  position: relative;
+  margin-bottom: 0.75rem;
+}
+
+.canvas-live::after {
+  content: 'LIVE SPECTRUM';
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Convergence delta label */
+.calibration-delta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--accent-primary);
+  text-align: center;
+  padding: 0.5rem;
+  margin-bottom: 0.5rem;
+  letter-spacing: 0.05em;
+}
+
+/* Results section within calibration card */
+.results-section {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+}
+
+.results-separator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 500;
+  margin-bottom: 1.25rem;
+}
+
+/* Advanced section */
+.advanced-section {
+  margin-top: 1.5rem;
+  border-top: 1px solid var(--glass-border);
+  padding-top: 1rem;
+}
+
 /* ===== BUTTONS ===== */
 button {
   font-family: 'Outfit', sans-serif;
@@ -390,18 +511,6 @@ canvas {
 .canvas-live {
   min-height: 130px;
   position: relative;
-}
-
-.canvas-live::after {
-  content: 'AUDIO SPECTRUM';
-  position: absolute;
-  top: 8px;
-  left: 10px;
-  font-size: 0.6rem;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  color: var(--text-muted);
-  font-family: 'JetBrains Mono', monospace;
 }
 
 .label {
@@ -1047,6 +1156,19 @@ footer {
 
   .canvas-live {
     min-height: 110px;
+  }
+
+  .calibration-controls {
+    flex-direction: column;
+  }
+
+  .calibration-delta {
+    font-size: 0.75rem;
+  }
+
+  details summary {
+    font-size: 0.85rem;
+    padding: 0.6rem 0.75rem;
   }
 
   .overlay-content {
