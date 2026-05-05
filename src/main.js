@@ -82,6 +82,12 @@ const ACTIVE_EQ_FREQS = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
 let activeEQFilters = null;   // BiquadFilterNode[] inserted in pink noise path
 let cumulativeEQGains = null; // Float32Array(8) — running total of applied EQ
 
+// Adaptive per-band gain limits (Phase 3)
+let perBandMaxGain = null;     // Float32Array(8), init to 6.0
+let perBandMaxCut = null;      // Float32Array(8), init to -6.0
+let perBandSaturationCount = null; // Uint8Array(8)
+let prevBandCorrected = null;  // Float32Array(8)
+
 // DOM Elements
 const btnNoise = document.getElementById("btn-noise");
 const btnSweep = document.getElementById("btn-sweep");
@@ -132,6 +138,12 @@ const remoteMicPublicUrlInput = document.getElementById("remote-mic-public-url")
 const remoteMicServerHint = document.getElementById("remote-mic-server-hint");
 const remoteMicConnectedBadge = document.getElementById("remote-mic-connected");
 const sweepInstructions = document.getElementById("sweep-instructions");
+
+// Legacy sweep (Advanced section) DOM elements
+const btnLegacySweep = document.getElementById("btn-legacy-sweep");
+const sweepCountAdvanced = document.getElementById("sweep-count-advanced");
+const statusLegacySweep = document.getElementById("status-legacy-sweep");
+const canvasLiveLegacy = document.getElementById("canvas-live-legacy");
 
 // Card sections for progress state management
 const cardDevices = document.getElementById("step-devices");
@@ -1523,6 +1535,8 @@ function _processMeasurementResults(spectrum, options = {}) {
   const method = options.method || 'sweep';
   const gainLimits = options.gainLimits || { maxGain: 8, maxCut: -12, bassMax: 4 };
   const smoothingFactor = options.smoothingFactor || 1.0;
+  const perBandMaxGain = options.perBandMaxGain || null;
+  const perBandMaxCut = options.perBandMaxCut || null;
 
   const { maxGain, maxCut, bassMax } = gainLimits;
   const effectiveRange = options.effectiveRange || { low: 0, high: Infinity };
@@ -1573,11 +1587,32 @@ function _processMeasurementResults(spectrum, options = {}) {
     const freq = visData[i].x;
     let gain = g;
 
+    // Determine per-band limits if available, otherwise use global limits
+    let bandMaxGain = maxGain;
+    let bandMaxCut = maxCut;
+    if (perBandMaxGain && perBandMaxCut) {
+      // Find nearest active EQ band
+      let nearestBand = 0;
+      let minDist = Infinity;
+      for (let b = 0; b < ACTIVE_EQ_FREQS.length; b++) {
+        const dist = Math.abs(Math.log10(freq) - Math.log10(ACTIVE_EQ_FREQS[b]));
+        if (dist < minDist) {
+          minDist = dist;
+          nearestBand = b;
+        }
+      }
+      // Only use per-band limits if frequency is close enough to a band
+      if (minDist < 0.3) { // within ~2x in log space
+        bandMaxGain = perBandMaxGain[nearestBand];
+        bandMaxCut = perBandMaxCut[nearestBand];
+      }
+    }
+
     // Apply hard limits first
     if (freq < 100) {
       gain = Math.min(gain, bassMax);
     }
-    gain = Math.max(maxCut, Math.min(maxGain, gain));
+    gain = Math.max(bandMaxCut, Math.min(bandMaxGain, gain));
 
     // Smooth fade-out outside effective range (1 octave transition)
     if (freq < effectiveRange.low) {
@@ -1863,6 +1898,12 @@ function startLiveCalibration() {
     activeEQFilters[i].connect(activeEQFilters[i + 1]);
   }
 
+  // Initialize adaptive per-band gain limits (Phase 3)
+  perBandMaxGain = new Float32Array(ACTIVE_EQ_FREQS.length).fill(6.0);
+  perBandMaxCut = new Float32Array(ACTIVE_EQ_FREQS.length).fill(-6.0);
+  perBandSaturationCount = new Uint8Array(ACTIVE_EQ_FREQS.length);
+  prevBandCorrected = new Float32Array(ACTIVE_EQ_FREQS.length).fill(-120);
+
   // Start pink noise with active EQ filter chain inserted
   pinkNoise = new PinkNoiseSource(ctx);
   pinkNoise.setFilterChain(activeEQFilters);
@@ -1966,6 +2007,8 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
   const result = _processMeasurementResults(corrected, {
     method: 'pink-noise',
     gainLimits: { maxGain: 4, maxCut: -4, bassMax: 4 },
+    perBandMaxGain: perBandMaxGain,
+    perBandMaxCut: perBandMaxCut,
     smoothingFactor: 2.5,
     effectiveRange: { low: 100, high: 8000 }
   });
@@ -1982,9 +2025,45 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
       gain = result.gains[idx];
     }
     deltaGains[f] = gain;
-    // Accumulate and clamp
-    cumulativeEQGains[f] += gain;
-    cumulativeEQGains[f] = Math.max(-4, Math.min(4, cumulativeEQGains[f]));
+  }
+
+  // ── Adaptive per-band saturation detection (Phase 3) ─────────────────
+  if (perBandSaturationCount && prevBandCorrected) {
+    const binWidth = analyzer.audioContext.sampleRate / analyzer.analyserNode.fftSize;
+    for (let f = 0; f < ACTIVE_EQ_FREQS.length; f++) {
+      const bin = Math.round(ACTIVE_EQ_FREQS[f] / binWidth);
+      const currResp = corrected[bin];
+      const expected = deltaGains[f];
+      const actual = isFinite(prevBandCorrected[f]) && isFinite(currResp)
+        ? currResp - prevBandCorrected[f]
+        : 0;
+
+      // Detect saturation: boost expected improvement but got much less
+      if (Math.abs(expected) > 10 && Math.abs(actual) < Math.abs(expected) * 0.35) {
+        perBandSaturationCount[f]++;
+        if (perBandSaturationCount[f] >= 2) {
+          if (expected > 0) {
+            perBandMaxGain[f] = Math.max(1.0, perBandMaxGain[f] * 0.75);
+          } else {
+            perBandMaxCut[f] = Math.min(-1.0, perBandMaxCut[f] * 0.75);
+          }
+          perBandSaturationCount[f] = 0; // reset after adjustment
+        }
+      } else {
+        perBandSaturationCount[f] = 0;
+      }
+      prevBandCorrected[f] = currResp;
+    }
+  }
+  // ── End adaptive per-band saturation detection ───────────────────────
+
+  // Apply cumulative EQ with per-band limits
+  for (let f = 0; f < ACTIVE_EQ_FREQS.length; f++) {
+    // Accumulate and clamp using per-band limits if available
+    cumulativeEQGains[f] += deltaGains[f];
+    const bandMax = perBandMaxGain ? perBandMaxGain[f] : 4;
+    const bandMin = perBandMaxCut ? perBandMaxCut[f] : -4;
+    cumulativeEQGains[f] = Math.max(bandMin, Math.min(bandMax, cumulativeEQGains[f]));
     // Apply to filter
     if (activeEQFilters && activeEQFilters[f]) {
       activeEQFilters[f].gain.value = cumulativeEQGains[f];
@@ -2124,12 +2203,12 @@ function _buildPartialResult(lastResult, cumulativeGains) {
   if (!cumulativeGains) return lastResult;
 
   const { visData, normalizedResponse } = lastResult;
-  const gains = new Float32Array(visData.length);
+  const gains = [];
 
   for (let i = 0; i < visData.length; i++) {
     const freq = visData[i].x;
     // Interpolate from 8 filter bands to this frequency
-    gains[i] = _interpolateEQGains(freq, cumulativeGains);
+    gains.push(_interpolateEQGains(freq, cumulativeGains));
   }
 
   return { visData, normalizedResponse, gains, rangeAvg: lastResult.rangeAvg };
@@ -2200,14 +2279,15 @@ function showResults(result, options = {}) {
   // EQ table
   populateEQTable(visData, gains);
 
-  // Enable export buttons
+  // Enable export buttons — ensure gains is a plain Array for JSON serialization
+  const gainsArray = Array.isArray(gains) ? gains : Array.from(gains);
   if (btnExportWavelet) {
     btnExportWavelet.disabled = false;
-    btnExportWavelet.dataset.gains = JSON.stringify(gains);
+    btnExportWavelet.dataset.gains = JSON.stringify(gainsArray);
   }
   if (btnExportEqMac) {
     btnExportEqMac.disabled = false;
-    btnExportEqMac.dataset.gains = JSON.stringify(gains);
+    btnExportEqMac.dataset.gains = JSON.stringify(gainsArray);
     btnExportEqMac.dataset.visData = JSON.stringify(visData);
   }
 
@@ -2269,6 +2349,12 @@ function stopCalibration() {
   calibrationRunning = false;
   activeEQFilters = null;
   cumulativeEQGains = null;
+
+  // Reset adaptive per-band gain limits (Phase 3)
+  perBandMaxGain = null;
+  perBandMaxCut = null;
+  perBandSaturationCount = null;
+  prevBandCorrected = null;
 
   // UI: show calibrate, hide stop
   if (btnCalibrate) btnCalibrate.classList.remove("hidden");
@@ -2495,13 +2581,15 @@ function restorePersistedProfile() {
   }
 
   // Enable export with saved profile (graphs shown only after calibration)
+  // loadProfile() returns gains as Float32Array — convert to plain Array for JSON serialization
+  const gainsArray = Array.from(profile.gains);
   if (btnExportWavelet) {
     btnExportWavelet.disabled = false;
-    btnExportWavelet.dataset.gains = JSON.stringify(profile.gains);
+    btnExportWavelet.dataset.gains = JSON.stringify(gainsArray);
   }
   if (btnExportEqMac) {
     btnExportEqMac.disabled = false;
-    btnExportEqMac.dataset.gains = JSON.stringify(profile.gains);
+    btnExportEqMac.dataset.gains = JSON.stringify(gainsArray);
   }
 }
 
@@ -2547,6 +2635,211 @@ if (btnStopCalibration) {
 }
 
 // ─── End Live Calibration Event Wiring ────────────────────────────────
+
+// ─── Legacy Sine Sweep (Advanced Section) ─────────────────────────────
+
+if (btnLegacySweep) {
+  btnLegacySweep.addEventListener("click", async () => {
+    try {
+      // Auto-load devices on first user gesture if not loaded yet
+      if (!selectedMicDeviceId && micSelect.options.length <= 1 && micSelect.options[0]?.textContent === "Loading devices…") {
+        statusDevices.textContent = "Detecting microphones...";
+        statusDevices.className = "status";
+        await loadDevices();
+      }
+
+      // If remote mic mode is active but stream hasn't arrived yet, wait for it
+      if (remoteMicHost && !remoteMicHost.remoteStream) {
+        statusLegacySweep.textContent = "Waiting for remote mic to connect...";
+        statusLegacySweep.className = "status";
+        btnLegacySweep.disabled = true;
+
+        let waited = 0;
+        while (!remoteMicHost.remoteStream && waited < 15000) {
+          await new Promise(r => setTimeout(r, 500));
+          waited += 500;
+        }
+
+        if (!remoteMicHost.remoteStream) {
+          statusLegacySweep.textContent = "Remote mic did not connect in time.";
+          statusLegacySweep.className = "status danger";
+          btnLegacySweep.disabled = false;
+          return;
+        }
+      }
+
+      const ctx = initAudioContext();
+      if (!analyzer) analyzer = new SpectrumAnalyzer();
+      await initAnalyzer(ctx);
+
+      const sweepCount = parseInt(sweepCountAdvanced?.value || "2");
+      const remoteLabel = isRemoteMicActive ? " [Remote Mic]" : "";
+
+      btnLegacySweep.disabled = true;
+      statusLegacySweep.textContent = `Running ${sweepCount} sweep(s) for averaging...` + remoteLabel;
+      statusLegacySweep.className = "status recording";
+
+      const allSpectra = [];
+
+      for (let sweepNum = 0; sweepNum < sweepCount; sweepNum++) {
+        // Reset accumulation for each sweep
+        accumulatedSpectrum = null;
+        frameCount = 0;
+
+        statusLegacySweep.textContent = `Sweep ${sweepNum + 1} of ${sweepCount}...`;
+
+        // Use a separate SineSweepSource for legacy sweep
+        const legacySweep = new SineSweepSource(ctx);
+        legacySweep.createBuffer(sweepDuration);
+
+        // Wait for this sweep to complete
+        await new Promise((resolve) => {
+          sweepSource = legacySweep;
+
+          legacySweep.onComplete = async () => {
+            // Apply 1/f compensation to the accumulated peak-hold spectrum
+            const f0 = 20;
+            const sr = analyzer.audioContext.sampleRate;
+            const fftSz = analyzer.analyserNode.fftSize;
+            const bw = sr / fftSz;
+
+            const compensatedSpectrum = new Float32Array(accumulatedSpectrum.length);
+            for (let i = 0; i < accumulatedSpectrum.length; i++) {
+              const freq = i * bw;
+              if (freq > f0) {
+                compensatedSpectrum[i] = accumulatedSpectrum[i] + 10 * Math.log10(freq / f0);
+              } else {
+                compensatedSpectrum[i] = accumulatedSpectrum[i];
+              }
+            }
+
+            allSpectra.push(compensatedSpectrum);
+            accumulatedSpectrum = null;
+            frameCount = 0;
+            sweepSource = null;
+            resolve();
+          };
+
+          legacySweep.start();
+
+          // Render on legacy canvas
+          renderLiveSweepOnCanvas(canvasLiveLegacy);
+        });
+
+        // Brief pause between sweeps
+        if (sweepNum < sweepCount - 1) {
+          await new Promise(r => setTimeout(r, 500));
+        }
+      }
+
+      // All sweeps done — average the compensated spectra
+      statusLegacySweep.textContent = `Averaging ${sweepCount} sweeps...`;
+      statusLegacySweep.className = "status info";
+
+      const averaged = new Float32Array(allSpectra[0].length);
+      for (let i = 0; i < averaged.length; i++) {
+        let sum = 0;
+        for (const spectrum of allSpectra) {
+          sum += spectrum[i];
+        }
+        averaged[i] = sum / allSpectra.length;
+      }
+
+      accumulatedSpectrum = averaged;
+      frameCount = 100;
+
+      // Process results using the same pipeline
+      const corrected = analyzer.getCorrectedSpectrumFromDB(averaged);
+      const result = _processMeasurementResults(corrected, {
+        method: 'sweep',
+        gainLimits: { maxGain: 4, maxCut: -4, bassMax: 4 },
+        smoothingFactor: 2.5,
+        effectiveRange: { low: 100, high: 8000 }
+      });
+
+      // Show results using the shared function
+      liveSpectrum = corrected;
+      showResults(result);
+
+      statusLegacySweep.textContent = "Legacy sweep complete! EQ curve ready to export.";
+      statusLegacySweep.className = "status done";
+      btnLegacySweep.disabled = false;
+
+    } catch (err) {
+      console.error(err);
+      statusLegacySweep.textContent = "Legacy sweep failed: " + err.message;
+      statusLegacySweep.className = "status danger";
+      btnLegacySweep.disabled = false;
+    }
+  });
+}
+
+/**
+ * Render live sweep on a specific canvas (used by legacy sweep).
+ * @param {HTMLCanvasElement} canvas
+ */
+function renderLiveSweepOnCanvas(canvas) {
+  if (!canvas || !analyzer) return;
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.width / dpr;
+  const height = canvas.height / dpr;
+
+  const data = analyzer.getCurrentSpectrum();
+  if (!data) {
+    requestAnimationFrame(() => renderLiveSweepOnCanvas(canvas));
+    return;
+  }
+
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+  ctx.fillRect(0, 0, width, height);
+
+  // Grid
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+  ctx.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) {
+    ctx.beginPath();
+    ctx.moveTo(0, (g / 4) * height);
+    ctx.lineTo(width, (g / 4) * height);
+    ctx.stroke();
+  }
+
+  // Draw spectrum
+  const logMin = Math.log10(20);
+  const logMax = Math.log10(20000);
+  const gradient = ctx.createLinearGradient(0, 0, width, 0);
+  gradient.addColorStop(0, "#00f5d4");
+  gradient.addColorStop(0.5, "#00f5d4");
+  gradient.addColorStop(1, "#ffc857");
+
+  ctx.save();
+  ctx.shadowColor = "#00f5d4";
+  ctx.shadowBlur = 12;
+  ctx.strokeStyle = gradient;
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  for (let i = 0; i < 128; i++) {
+    const logFreq = logMin + (i / 128) * (logMax - logMin);
+    const freq = Math.pow(10, logFreq);
+    const binIdx = Math.floor((freq / (analyzer.audioContext.sampleRate / 2)) * data.length);
+    const x = (i / 128) * width;
+    const db = data[Math.min(binIdx, data.length - 1)];
+    const y = Math.max(0, Math.min(height, ((db + 100) / 100) * height));
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  // Continue rendering while sweep is active
+  if (sweepSource) {
+    requestAnimationFrame(() => renderLiveSweepOnCanvas(canvas));
+  }
+}
+
+// ─── End Legacy Sine Sweep ────────────────────────────────────────────
 
 // Initialize all canvases
 resizeCanvases();

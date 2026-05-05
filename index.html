@@ -157,7 +157,22 @@
         <details id="advanced-section" class="advanced-section">
           <summary class="details-summary">Advanced</summary>
           <div class="details-content">
-            <p class="text-muted" style="font-size:0.85rem;color:var(--text-muted);">Legacy sweep calibration will appear here in a future update.</p>
+            <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;">
+              Use the classic 8-second sine sweep for maximum precision.
+            </p>
+            <div class="controls-row">
+              <button id="btn-legacy-sweep" class="btn-secondary">▶ Legacy Sine Sweep (8s)</button>
+            </div>
+            <label for="sweep-count-advanced" style="font-size:0.75rem;color:#6a6a7a;margin-top:0.5rem;display:block;">
+              Averages:
+              <select id="sweep-count-advanced" style="width:auto;display:inline;margin-left:0.5rem;">
+                <option value="1">1 (fast)</option>
+                <option value="2" selected>2 (recommended)</option>
+                <option value="3">3 (best)</option>
+              </select>
+            </label>
+            <p id="status-legacy-sweep" class="status"></p>
+            <canvas id="canvas-live-legacy" width="800" height="130" style="margin-top:0.5rem;"></canvas>
           </div>
         </details>
       </section>
