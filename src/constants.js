@@ -21,3 +21,8 @@ export const SNR_THRESHOLD_DB = 10;
 export const MIN_MEASUREMENTS = 4;
 export const CALIBRATION_TIMEOUT_MS = 30000;
 export const SILENCE_THRESHOLD_DB = -70;
+
+// Adaptive per-band gain limits (Phase 3)
+export const INITIAL_PER_BAND_GAIN = 6;
+export const SATURATION_RATIO_THRESHOLD = 0.35;
+export const SATURATION_CONSECUTIVE_COUNT = 2;

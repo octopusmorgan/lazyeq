@@ -19,7 +19,7 @@ import {
 import { PinkNoiseSource } from "./pinkNoise.js";
 import { ConvergenceDetector } from "./convergence.js";
 import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated } from "./persistence.js";
-import { PINK_NOISE_GAIN, MEASUREMENT_INTERVAL_MS, CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT, SNR_THRESHOLD_DB, MIN_MEASUREMENTS, CALIBRATION_TIMEOUT_MS, SILENCE_THRESHOLD_DB } from "./constants.js";
+import { PINK_NOISE_GAIN, MEASUREMENT_INTERVAL_MS, CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT, SNR_THRESHOLD_DB, MIN_MEASUREMENTS, CALIBRATION_TIMEOUT_MS, SILENCE_THRESHOLD_DB, INITIAL_PER_BAND_GAIN, SATURATION_RATIO_THRESHOLD, SATURATION_CONSECUTIVE_COUNT } from "./constants.js";
 
 /**
  * Convert hex color to RGBA string
@@ -1899,8 +1899,8 @@ function startLiveCalibration() {
   }
 
   // Initialize adaptive per-band gain limits (Phase 3)
-  perBandMaxGain = new Float32Array(ACTIVE_EQ_FREQS.length).fill(6.0);
-  perBandMaxCut = new Float32Array(ACTIVE_EQ_FREQS.length).fill(-6.0);
+  perBandMaxGain = new Float32Array(ACTIVE_EQ_FREQS.length).fill(INITIAL_PER_BAND_GAIN);
+  perBandMaxCut = new Float32Array(ACTIVE_EQ_FREQS.length).fill(-INITIAL_PER_BAND_GAIN);
   perBandSaturationCount = new Uint8Array(ACTIVE_EQ_FREQS.length);
   prevBandCorrected = new Float32Array(ACTIVE_EQ_FREQS.length).fill(-120);
 
@@ -2039,9 +2039,9 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
         : 0;
 
       // Detect saturation: boost expected improvement but got much less
-      if (Math.abs(expected) > 10 && Math.abs(actual) < Math.abs(expected) * 0.35) {
+      if (Math.abs(expected) > 1.0 && Math.abs(actual) < Math.abs(expected) * SATURATION_RATIO_THRESHOLD) {
         perBandSaturationCount[f]++;
-        if (perBandSaturationCount[f] >= 2) {
+        if (perBandSaturationCount[f] >= SATURATION_CONSECUTIVE_COUNT) {
           if (expected > 0) {
             perBandMaxGain[f] = Math.max(1.0, perBandMaxGain[f] * 0.75);
           } else {
@@ -2671,6 +2671,14 @@ if (btnLegacySweep) {
       const ctx = initAudioContext();
       if (!analyzer) analyzer = new SpectrumAnalyzer();
       await initAnalyzer(ctx);
+
+      // Capture noise floor if not already done
+      if (!analyzer.noiseBuffer) {
+        statusLegacySweep.textContent = "Capturing noise floor (5s silence)...";
+        statusLegacySweep.className = "status recording";
+        await analyzer.captureNoiseFloor(5);
+        await analyzer.calibrateMicrophone();
+      }
 
       const sweepCount = parseInt(sweepCountAdvanced?.value || "2");
       const remoteLabel = isRemoteMicActive ? " [Remote Mic]" : "";
