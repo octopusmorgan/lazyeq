@@ -1688,6 +1688,10 @@ async function processSweepResults() {
   updateStepIndicator(2, "completed");
   updateStepIndicator(3, "active");
 
+  // Show results card BEFORE resizing canvases, otherwise getBoundingClientRect
+  // returns 0x0 for hidden elements and graphs render on zero-size bitmaps.
+  if (cardResults) cardResults.classList.remove("hidden");
+
   await new Promise((resolve) => requestAnimationFrame(resolve));
   resizeCanvases();
 
@@ -1741,7 +1745,6 @@ async function processSweepResults() {
   btnExportEqMac.dataset.gains = JSON.stringify(gains);
   btnExportEqMac.dataset.visData = JSON.stringify(visData);
   resultsReady = true;
-  if (cardResults) cardResults.classList.remove("hidden");
 
   // Release microphone after results are ready
   try {
