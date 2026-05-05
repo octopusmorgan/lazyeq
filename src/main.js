@@ -926,6 +926,10 @@ function adaptiveSmooth(data, smoothingFactor = 1.0) {
 
 // Populate EQ table
 function populateEQTable(visData, gains) {
+  if (import.meta.env.DEV) {
+    const sample = visData.slice(0, 5).map(p => `${p.x.toFixed(0)}Hz:${p.y.toFixed(1)}`);
+    console.log(`[populateEQTable] visData[0..4]:`, sample.join(' | '));
+  }
   const table = document.getElementById("eq-table");
   if (!table) return;
 
