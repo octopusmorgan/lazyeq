@@ -2181,7 +2181,7 @@ function stopCalibration() {
  * Draws 3 lines: target curve (cached), spectrum (updating), EQ (converging).
  */
 function renderLiveCalibration(timestamp, final = false) {
-  if (!calibrationRunning) return;
+  if (!calibrationRunning && !final) return;
 
   const canvas = canvasLive;
   if (!canvas) return;
@@ -2328,6 +2328,7 @@ function renderLiveCalibration(timestamp, final = false) {
  * Called when calibration completes or is manually stopped.
  */
 function renderLiveCalibrationFinal() {
+  if (import.meta.env.DEV) console.log("[live canvas] rendering final frame");
   renderLiveCalibration(0, true);
 }
 
