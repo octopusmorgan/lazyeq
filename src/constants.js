@@ -8,3 +8,10 @@ export const FFT_SIZE = 2048;
 
 // Microphone reference offset (dB) - calibrated silence level
 export const MIC_REFERENCE_OFFSET = 90;
+
+// Pink noise calibration
+export const PINK_NOISE_BUFFER_SECS = 10;
+export const PINK_NOISE_GAIN = 0.65;
+export const MEASUREMENT_INTERVAL_MS = 500;
+export const CONVERGENCE_THRESHOLD_DB = 0.5;
+export const CONVERGENCE_WINDOW_COUNT = 3;
