@@ -1864,6 +1864,43 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
     effectiveRange: { low: 100, high: 8000 }
   });
 
+  // ── Diagnostic logs ──────────────────────────────────────────────────
+  if (import.meta.env.DEV) {
+    const binWidth = analyzer.audioContext.sampleRate / analyzer.analyserNode.fftSize;
+    const keyFreqs = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
+    const elapsed = (elapsedMs / 1000).toFixed(1);
+
+    // Raw spectrum at key frequencies
+    const rawVals = keyFreqs.map(f => {
+      const bin = Math.round(f / binWidth);
+      return spectrum[bin]?.toFixed(1) ?? '---';
+    }).join(' | ');
+
+    // Corrected (noise-subtracted + mic-corrected) at key frequencies
+    const corVals = keyFreqs.map(f => {
+      const bin = Math.round(f / binWidth);
+      return corrected[bin]?.toFixed(1) ?? '---';
+    }).join(' | ');
+
+    // EQ gains from result
+    const eqVals = keyFreqs.map(f => {
+      const point = result.visData.find(v => Math.abs(v.x - f) < f * 0.1);
+      if (!point) return '----';
+      const idx = result.visData.indexOf(point);
+      const g = result.gains[idx];
+      return (g >= 0 ? '+' : '') + g.toFixed(1);
+    }).join(' | ');
+
+    console.log(
+      `[t=${elapsed}s] RMS=${rms.toFixed(0)}dB\n` +
+      `  Freq (Hz):  ${keyFreqs.map(f => String(f).padStart(5)).join(' | ')}\n` +
+      `  Raw:        ${rawVals}\n` +
+      `  Corrected:  ${corVals}\n` +
+      `  EQ gains:   ${eqVals}`
+    );
+  }
+  // ── End diagnostic logs ──────────────────────────────────────────────
+
   // Update shared state for canvas rendering
   liveSpectrum = spectrum;
   liveEQGains = result.gains;
@@ -1872,6 +1909,10 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
   // Feed convergence detector
   if (convergenceDetector) {
     const { converged, delta } = convergenceDetector.push(result.gains);
+
+    if (import.meta.env.DEV) {
+      console.log(`  Δ = ${delta.toFixed(2)} dB ${converged ? '✅ CONVERGED' : ''}`);
+    }
 
     // Update delta label
     if (calibrationDelta) {
