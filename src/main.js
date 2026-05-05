@@ -1995,6 +1995,9 @@ function onCalibrationComplete(result) {
 
   calibrationRunning = false;
 
+  // Render final frame on live canvas before stopping the loop
+  renderLiveCalibrationFinal();
+
   // Save profile
   saveProfile({ gains: result.gains, timestamp: Date.now(), type: 'pink-noise' });
 
@@ -2143,6 +2146,9 @@ function stopCalibration() {
   activeEQFilters = null;
   cumulativeEQGains = null;
 
+  // Render final frame on live canvas
+  renderLiveCalibrationFinal();
+
   // UI: show calibrate, hide stop
   if (btnCalibrate) btnCalibrate.classList.remove("hidden");
   if (btnStopCalibration) btnStopCalibration.classList.add("hidden");
@@ -2176,7 +2182,7 @@ function stopCalibration() {
  * Live canvas rendering — called via requestAnimationFrame.
  * Draws 3 lines: target curve (cached), spectrum (updating), EQ (converging).
  */
-function renderLiveCalibration(timestamp) {
+function renderLiveCalibration(timestamp, final = false) {
   if (!calibrationRunning) return;
 
   const canvas = canvasLive;
@@ -2313,8 +2319,18 @@ function renderLiveCalibration(timestamp) {
     ctx.fillText(deltaText, width - textWidth - 10, height - 10);
   }
 
-  // Continue loop
-  requestAnimationFrame(renderLiveCalibration);
+  // Continue loop unless this is the final frame
+  if (final !== true) {
+    requestAnimationFrame(renderLiveCalibration);
+  }
+}
+
+/**
+ * Render one final frame on the live canvas and stop the loop.
+ * Called when calibration completes or is manually stopped.
+ */
+function renderLiveCalibrationFinal() {
+  renderLiveCalibration(0, true);
 }
 
 /**
