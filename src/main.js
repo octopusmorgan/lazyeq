@@ -8,7 +8,7 @@ import { SpectrumAnalyzer } from "./analyzer.js";
 import { RemoteMicHost } from "./webrtc/remoteMicHost.js";
 import { generateQRDataUrl } from "./webrtc/qrCode.js";
 import { resolveSignalingUrl, isPrivateOrLocalHostname } from "./webrtc/networkDiscovery.js";
-import { SAMPLE_RATE } from "./constants.js";
+import { SAMPLE_RATE, FFT_SIZE } from "./constants.js";
 import {
   exportWavelet,
   exportEqMac,
