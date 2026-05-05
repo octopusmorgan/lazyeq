@@ -309,6 +309,34 @@ export class SpectrumAnalyzer {
     return lower.db + ratio * (upper.db - lower.db);
   }
 
+  /**
+   * Compute the power-averaged noise floor level from the stored noiseBuffer.
+   *
+   * Converts each bin from dB to linear power, averages the power across
+   * all valid bins (> -100 dB), then converts back to dB.
+   *
+   * @returns {number} Noise floor level in dB, or -100 if no noise buffer
+   */
+  getNoiseFloorRMS() {
+    if (!this.noiseBuffer) return -100;
+
+    let totalPower = 0;
+    let validBins = 0;
+
+    for (let i = 0; i < this.noiseBuffer.length; i++) {
+      const db = this.noiseBuffer[i];
+      if (db > -100) {
+        totalPower += Math.pow(10, db / 10);
+        validBins++;
+      }
+    }
+
+    if (validBins === 0) return -100;
+
+    const avgPower = totalPower / validBins;
+    return 10 * Math.log10(avgPower);
+  }
+
   async captureSpeaker(duration = 5) {
     return await this.recordSegment(duration);
   }
