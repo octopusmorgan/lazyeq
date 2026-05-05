@@ -327,8 +327,9 @@ async function loadDevices() {
   }
 }
 
-// Defer loadDevices() to user gesture - don't call at module load
-// P-7: Remove eager call at module load
+// Auto-load devices at startup (enumerateDevices doesn't require permission).
+// Labels may be generic until the user grants mic access, but the devices
+// are immediately selectable. Refresh button handles new hot-plugged devices.
 
 // Refresh button
 btnRefreshDevices.addEventListener("click", async () => {
@@ -1747,6 +1748,9 @@ window.addEventListener("resize", resizeCanvases);
 if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", resizeCanvases);
 }
+
+// Auto-detect microphones on page load
+loadDevices();
 
 // Initialize all canvases
 resizeCanvases();
