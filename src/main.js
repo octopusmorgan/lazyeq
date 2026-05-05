@@ -2327,15 +2327,15 @@ function restorePersistedProfile() {
 
   if (statusCalibration) {
     if (ageHours < 24) {
-      statusCalibration.textContent = "Loaded saved calibration (" + Math.round(ageHours) + "h ago).";
+      statusCalibration.textContent = "Loaded saved calibration (" + Math.round(ageHours) + "h ago). Ready to use or recalibrate.";
       statusCalibration.className = "status done";
     } else {
-      statusCalibration.textContent = "Saved calibration is " + Math.round(ageHours) + "h old — consider recalibrating.";
+      statusCalibration.textContent = "Loaded saved calibration (" + Math.round(ageHours) + "h old) — recalibrate for best accuracy.";
       statusCalibration.className = "status info";
     }
   }
 
-  // Create a synthetic result to display
+  // Create a synthetic result to display graphs
   const visData = [];
   for (let i = 0; i < 64; i++) {
     const freq = 20 * Math.pow(20000 / 20, i / 63);
@@ -2344,18 +2344,36 @@ function restorePersistedProfile() {
 
   const result = { visData, gains: profile.gains, normalizedResponse: new Float32Array(64) };
 
-  // Show results
-  showResults(result);
+  // Render graphs but keep section hidden
+  if (resultsSection) resultsSection.classList.remove("hidden");
+  resizeCanvases();
 
-  // Override status message
-  if (statusCalibration) {
-    if (ageHours < 24) {
-      statusCalibration.textContent = "Loaded saved calibration (" + Math.round(ageHours) + "h ago). Ready to use or recalibrate.";
-      statusCalibration.className = "status done";
-    } else {
-      statusCalibration.textContent = "Loaded saved calibration (" + Math.round(ageHours) + "h old). Results shown — recalibrate for best accuracy.";
-      statusCalibration.className = "status info";
-    }
+  // Estimated canvas: response after EQ (using normalized response of zero + gains)
+  if (canvasEstimated && result.normalizedResponse) {
+    const smoothedArr = Array.from(result.normalizedResponse);
+    const estimatedResponse = smoothedArr.map((v, i) => v + (result.gains[i] || 0));
+    const estCtx = canvasEstimated.getContext("2d");
+    renderSpectrum(estCtx, estimatedResponse, "#00f5d4");
+  }
+
+  // EQ canvas
+  if (canvasEq && result.gains) {
+    const eqCtx = canvasEq.getContext("2d");
+    renderEQCurve(eqCtx, result.gains);
+  }
+
+  // EQ table
+  populateEQTable(visData, result.gains);
+
+  // Enable export buttons
+  if (btnExportWavelet) {
+    btnExportWavelet.disabled = false;
+    btnExportWavelet.dataset.gains = JSON.stringify(result.gains);
+  }
+  if (btnExportEqMac) {
+    btnExportEqMac.disabled = false;
+    btnExportEqMac.dataset.gains = JSON.stringify(result.gains);
+    btnExportEqMac.dataset.visData = JSON.stringify(visData);
   }
 }
 
