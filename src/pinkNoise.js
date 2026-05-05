@@ -18,6 +18,7 @@ export class PinkNoiseSource {
     this._ctx = audioContext;
     this._gainNode = this._ctx.createGain();
     this._gainNode.gain.value = PINK_NOISE_GAIN;
+    this._gainNode.connect(this._ctx.destination);
     this._source = null;
     this._buffer = null;
   }
