@@ -1974,7 +1974,7 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
     method: 'pink-noise',
     gainLimits: { maxGain: 4, maxCut: -4, bassMax: 4 },
     smoothingFactor: 2.5,
-    effectiveRange: { low: 100, high: 8000 }
+    effectiveRange: { low: 20, high: 20000 }
   });
 
   // ── Active EQ: interpolate gains to filter bands and update ──────────
