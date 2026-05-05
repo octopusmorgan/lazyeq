@@ -63,6 +63,10 @@ export class PinkNoiseSource {
   start() {
     if (this._source) return; // already playing
 
+    if (this._ctx.state === "suspended") {
+      this._ctx.resume();
+    }
+
     const buffer = this._generateBuffer();
     this._source = this._ctx.createBufferSource();
     this._source.buffer = buffer;
