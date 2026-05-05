@@ -18,8 +18,8 @@ import {
 } from "./eqGenerator.js";
 import { PinkNoiseSource } from "./pinkNoise.js";
 import { ConvergenceDetector } from "./convergence.js";
-import { saveProfile, loadProfile } from "./persistence.js";
-import { PINK_NOISE_GAIN, MEASUREMENT_INTERVAL_MS, CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT } from "./constants.js";
+import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated } from "./persistence.js";
+import { PINK_NOISE_GAIN, MEASUREMENT_INTERVAL_MS, CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT, SNR_THRESHOLD_DB, MIN_MEASUREMENTS, CALIBRATION_TIMEOUT_MS, SILENCE_THRESHOLD_DB } from "./constants.js";
 
 /**
  * Convert hex color to RGBA string
@@ -69,6 +69,13 @@ let calibrationStartTime = 0;
 let lowInputWarningCount = 0;
 let cachedTargetCurve = null; // Pre-computed target curve for live canvas
 let lastMeasurementResult = null; // Best result for stop/partial
+
+// Phase 2 stability gating state
+let bestResult = null;           // best measurement result (lowest max delta)
+let bestMaxDelta = Infinity;     // lowest max(|deltaGains|) seen
+let validMeasurementCount = 0;   // non-SNR-gated windows
+let consecutiveSNRSkips = 0;     // consecutive SNR-gated skips
+let calibrationTimeout = null;   // setTimeout ID for 30s watchdog
 
 // Active EQ state — filter chain applied to pink noise in real time
 const ACTIVE_EQ_FREQS = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
@@ -1795,6 +1802,22 @@ function startLiveCalibration() {
   liveSpectrum = null;
   liveEQGains = null;
 
+  // Reset Phase 2 stability gating state
+  bestResult = null;
+  bestMaxDelta = Infinity;
+  validMeasurementCount = 0;
+  consecutiveSNRSkips = 0;
+  calibrationTimeout = null;
+
+  // Pre-calibration health check: quick RMS check before starting
+  if (analyzer && analyzer.getRMSLevel) {
+    const preRms = analyzer.getRMSLevel();
+    if (preRms < SILENCE_THRESHOLD_DB && statusCalibration) {
+      statusCalibration.textContent = "Mic seems silent — check your device. Starting anyway...";
+      statusCalibration.className = "status info";
+    }
+  }
+
   // UI: show stop, hide calibrate, hide previous results
   if (btnCalibrate) btnCalibrate.classList.add("hidden");
   if (btnStopCalibration) btnStopCalibration.classList.remove("hidden");
@@ -1811,8 +1834,8 @@ function startLiveCalibration() {
     analyzer = new SpectrumAnalyzer();
   }
 
-  // Reset convergence detector
-  convergenceDetector = new ConvergenceDetector(CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT);
+  // Reset convergence detector with minMeasurements gate
+  convergenceDetector = new ConvergenceDetector(CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT, MIN_MEASUREMENTS);
 
   // Initialize cumulative EQ (starts flat — zero correction)
   cumulativeEQGains = new Float32Array(ACTIVE_EQ_FREQS.length);
@@ -1845,6 +1868,13 @@ function startLiveCalibration() {
       onMeasurementCallback(result);
     }, MEASUREMENT_INTERVAL_MS);
 
+    // Set 30s watchdog timeout
+    calibrationTimeout = setTimeout(() => {
+      if (calibrationRunning) {
+        onCalibrationComplete(bestResult || lastMeasurementResult, { timedOut: true });
+      }
+    }, CALIBRATION_TIMEOUT_MS);
+
     // Start canvas rendering loop
     requestAnimationFrame(renderLiveCalibration);
   }).catch((err) => {
@@ -1862,6 +1892,28 @@ function startLiveCalibration() {
  * @param {{spectrum: Float32Array, rms: number, elapsedMs: number}} result
  */
 function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
+  // Timeout check: if we've exceeded the watchdog, stop with best result
+  if (elapsedMs > CALIBRATION_TIMEOUT_MS) {
+    onCalibrationComplete(bestResult || lastMeasurementResult, { timedOut: true });
+    return;
+  }
+
+  // SNR gating: compute noise floor and skip if SNR is too low
+  const noiseFloorRMS = analyzer.getNoiseFloorRMS();
+  if (noiseFloorRMS > -100) {
+    const snr = rms - noiseFloorRMS;
+    if (snr < SNR_THRESHOLD_DB) {
+      consecutiveSNRSkips++;
+      if (consecutiveSNRSkips > 5 && statusCalibration) {
+        statusCalibration.textContent = "Low signal-to-noise ratio — check speaker volume or move closer.";
+        statusCalibration.className = "status danger";
+      }
+      return; // Skip this window entirely
+    }
+  }
+  // Valid measurement — reset skip counter
+  consecutiveSNRSkips = 0;
+  validMeasurementCount++;
   // Low-input warning
   if (rms < -60) {
     lowInputWarningCount++;
@@ -1951,6 +2003,13 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
   }
   // ── End diagnostic logs ──────────────────────────────────────────────
 
+  // Track best result (lowest max |deltaGains|)
+  const currentMax = Math.max(...Array.from(deltaGains).map(Math.abs));
+  if (!bestResult || currentMax < bestMaxDelta) {
+    bestResult = result;
+    bestMaxDelta = currentMax;
+  }
+
   // Update shared state for canvas rendering
   liveSpectrum = spectrum;
   liveEQGains = result.gains;
@@ -1980,9 +2039,17 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
 }
 
 /**
- * Called when convergence is detected.
+ * Called when convergence is detected or timeout fires.
+ * @param {Object} result
+ * @param {{timedOut?: boolean}} options
  */
-function onCalibrationComplete(result) {
+function onCalibrationComplete(result, options = {}) {
+  // Clear the watchdog timeout
+  if (calibrationTimeout) {
+    clearTimeout(calibrationTimeout);
+    calibrationTimeout = null;
+  }
+
   // Stop pink noise and measurement
   if (pinkNoise) {
     pinkNoise.stop();
@@ -1995,18 +2062,23 @@ function onCalibrationComplete(result) {
 
   calibrationRunning = false;
 
-  // Save profile
-  saveProfile({ gains: result.gains, timestamp: Date.now(), type: 'pink-noise' });
+  // Save profile with dual-slot + saturation rollback
+  const saveResult = saveProfile({ gains: result.gains, timestamp: Date.now(), type: 'pink-noise' });
 
   // Show results
-  showResults(result);
+  showResults(result, { timedOut: options.timedOut, rolledBack: saveResult.rolledBack });
 
-  // Render final frame on live canvas AFTER showResults (so resizeCanvases doesn't clear it)
+  // Render final frame on live canvas AFTER showResults
   renderLiveCalibrationFinal();
 
   if (statusCalibration) {
-    statusCalibration.textContent = "Calibration complete! Your EQ is ready.";
-    statusCalibration.className = "status done";
+    if (options.timedOut) {
+      statusCalibration.textContent = "Calibration timed out — showing best available result. Try moving closer to the speaker.";
+      statusCalibration.className = "status info";
+    } else {
+      statusCalibration.textContent = "Calibration complete! Your EQ is ready.";
+      statusCalibration.className = "status done";
+    }
   }
 }
 
@@ -2058,8 +2130,10 @@ function _interpolateEQGains(freq, gains) {
 
 /**
  * Display calibration results on the existing canvases.
+ * @param {Object} result
+ * @param {{timedOut?: boolean, rolledBack?: boolean}} options
  */
-function showResults(result) {
+function showResults(result, options = {}) {
   const { visData, gains } = result;
 
   // Show results section FIRST so canvases have dimensions
@@ -2105,6 +2179,18 @@ function showResults(result) {
     btnExportEqMac.dataset.visData = JSON.stringify(visData);
   }
 
+  // Post-calibration saturation advisory
+  if (options.rolledBack && statusCalibration) {
+    statusCalibration.textContent = "Calibration saturated at limits — reverted to previous profile.";
+    statusCalibration.className = "status danger";
+  } else if (cumulativeEQGains) {
+    const maxAbs = Math.max(...Array.from(cumulativeEQGains).map(Math.abs));
+    if (maxAbs >= 4.0 && statusCalibration) {
+      statusCalibration.textContent = "High correction applied — room may need acoustic treatment.";
+      statusCalibration.className = "status info";
+    }
+  }
+
   // UI: show calibrate, hide stop
   if (btnCalibrate) btnCalibrate.classList.remove("hidden");
   if (btnStopCalibration) btnStopCalibration.classList.add("hidden");
@@ -2128,6 +2214,12 @@ function showResults(result) {
  * Stop calibration manually (user clicks Stop or error occurs).
  */
 function stopCalibration() {
+  // Clear the watchdog timeout
+  if (calibrationTimeout) {
+    clearTimeout(calibrationTimeout);
+    calibrationTimeout = null;
+  }
+
   if (!calibrationRunning && !pinkNoise && !continuousMeasurement) return;
 
   if (pinkNoise) {
