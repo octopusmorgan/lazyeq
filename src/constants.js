@@ -15,3 +15,9 @@ export const PINK_NOISE_GAIN = 0.65;
 export const MEASUREMENT_INTERVAL_MS = 500;
 export const CONVERGENCE_THRESHOLD_DB = 0.5;
 export const CONVERGENCE_WINDOW_COUNT = 3;
+
+// Stability gating (Phase 2)
+export const SNR_THRESHOLD_DB = 10;
+export const MIN_MEASUREMENTS = 4;
+export const CALIBRATION_TIMEOUT_MS = 30000;
+export const SILENCE_THRESHOLD_DB = -70;
