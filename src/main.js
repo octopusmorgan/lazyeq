@@ -2154,6 +2154,7 @@ function _interpolateEQGains(freq, gains) {
  */
 function showResults(result, options = {}) {
   const { visData, gains } = result;
+  if (import.meta.env.DEV) console.log("[showResults] called — has gains:", !!gains, "has normalizedResponse:", !!result.normalizedResponse, "has visData:", !!visData);
 
   // Show results section FIRST so canvases have dimensions
   if (resultsSection) resultsSection.classList.remove("hidden");
@@ -2166,8 +2167,11 @@ function showResults(result, options = {}) {
     const corrected = analyzer.getCorrectedSpectrumFromDB(liveSpectrum);
     if (corrected) {
       const specCtx = canvasSpectrum.getContext("2d");
+      if (import.meta.env.DEV) console.log("[showResults] rendering spectrum canvas, size:", canvasSpectrum.width, "x", canvasSpectrum.height);
       renderSpectrum(specCtx, corrected, "#ff6b6b");
     }
+  } else if (import.meta.env.DEV) {
+    console.log("[showResults] spectrum canvas SKIPPED — canvasSpectrum:", !!canvasSpectrum, "liveSpectrum:", !!liveSpectrum);
   }
 
   // Estimated canvas: response after EQ
@@ -2175,7 +2179,10 @@ function showResults(result, options = {}) {
     const smoothedArr = Array.from(result.normalizedResponse);
     const estimatedResponse = smoothedArr.map((v, i) => v + (gains[i] || 0));
     const estCtx = canvasEstimated.getContext("2d");
+    if (import.meta.env.DEV) console.log("[showResults] rendering estimated canvas, points:", estimatedResponse.length, "canvas size:", canvasEstimated.width, "x", canvasEstimated.height);
     renderSpectrum(estCtx, estimatedResponse, "#00f5d4");
+  } else if (import.meta.env.DEV) {
+    console.log("[showResults] estimated canvas SKIPPED — canvasEstimated:", !!canvasEstimated, "normalizedResponse:", !!result.normalizedResponse);
   }
 
   // EQ canvas
