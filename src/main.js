@@ -2059,6 +2059,9 @@ function _interpolateEQGains(freq, gains) {
 function showResults(result) {
   const { visData, gains } = result;
 
+  // Show results section FIRST so canvases have dimensions
+  if (resultsSection) resultsSection.classList.remove("hidden");
+
   // Render on existing canvases using existing functions
   resizeCanvases();
 
@@ -2098,9 +2101,6 @@ function showResults(result) {
     btnExportEqMac.dataset.gains = JSON.stringify(gains);
     btnExportEqMac.dataset.visData = JSON.stringify(visData);
   }
-
-  // Show results section
-  if (resultsSection) resultsSection.classList.remove("hidden");
 
   // UI: show calibrate, hide stop
   if (btnCalibrate) btnCalibrate.classList.remove("hidden");
