@@ -2179,7 +2179,12 @@ function showResults(result, options = {}) {
     const smoothedArr = Array.from(result.normalizedResponse);
     const estimatedResponse = smoothedArr.map((v, i) => v + (gains[i] || 0));
     const estCtx = canvasEstimated.getContext("2d");
-    if (import.meta.env.DEV) console.log("[showResults] rendering estimated canvas, points:", estimatedResponse.length, "canvas size:", canvasEstimated.width, "x", canvasEstimated.height);
+    if (import.meta.env.DEV) {
+      const sampleGains = gains.slice(0, 5).map(g => g.toFixed(1)).join(', ');
+      const sampleResp = smoothedArr.slice(0, 5).map(v => v.toFixed(1)).join(', ');
+      const sampleEst = estimatedResponse.slice(0, 5).map(v => v.toFixed(1)).join(', ');
+      console.log("[showResults] estimated: gains[0..4]=", sampleGains, "| normResp[0..4]=", sampleResp, "| estimated[0..4]=", sampleEst);
+    }
     renderSpectrum(estCtx, estimatedResponse, "#00f5d4");
   } else if (import.meta.env.DEV) {
     console.log("[showResults] estimated canvas SKIPPED — canvasEstimated:", !!canvasEstimated, "normalizedResponse:", !!result.normalizedResponse);
