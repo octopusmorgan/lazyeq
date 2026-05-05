@@ -7,10 +7,30 @@
  */
 
 const STORAGE_KEY = 'lazyEq_calibration';
+const STORAGE_KEY_PREV = 'lazyEq_calibration_prev';
 
 /**
- * Save a calibration profile to localStorage.
+ * Check if all 8 ISO bands are saturated at ±4dB limits.
+ * @param {Float32Array|number[]} gains
+ * @returns {boolean}
+ */
+export function isProfileSaturated(gains) {
+  if (!gains || gains.length === 0) return false;
+  for (let i = 0; i < gains.length; i++) {
+    const g = gains[i];
+    if (g > -4.0 && g < 4.0) return false;
+  }
+  return true;
+}
+
+/**
+ * Save a calibration profile to localStorage using dual-slot persistence.
+ * Moves current → previous, then saves new → current.
+ * If the new profile is saturated (all bands at ±4dB) and a previous exists,
+ * auto-rollback: restore previous → current.
+ *
  * @param {{gains: Float32Array|null, timestamp: number, type: string}} profile
+ * @returns {{rolledBack: boolean}}
  */
 export function saveProfile(profile) {
   const serializable = {
@@ -18,16 +38,49 @@ export function saveProfile(profile) {
     timestamp: profile.timestamp,
     type: profile.type,
   };
+
+  // Move current → previous
+  const current = localStorage.getItem(STORAGE_KEY);
+  if (current) {
+    localStorage.setItem(STORAGE_KEY_PREV, current);
+  }
+
+  // Check saturation: if all bands at ±4dB and previous exists, rollback
+  if (profile.gains && isProfileSaturated(profile.gains) && current) {
+    // Restore previous → current (auto-rollback)
+    localStorage.setItem(STORAGE_KEY, current);
+    return { rolledBack: true };
+  }
+
+  // Normal save: new → current
   localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
+  return { rolledBack: false };
 }
 
 /**
- * Load a calibration profile from localStorage.
+ * Load a calibration profile from localStorage (current slot).
  * @returns {{gains: Float32Array|null, timestamp: number, type: string}|null}
  */
 export function loadProfile() {
+  return _loadFromKey(STORAGE_KEY);
+}
+
+/**
+ * Load the previous calibration profile from localStorage.
+ * @returns {{gains: Float32Array|null, timestamp: number, type: string}|null}
+ */
+export function loadPreviousProfile() {
+  return _loadFromKey(STORAGE_KEY_PREV);
+}
+
+/**
+ * Internal helper: load and parse a profile from a given storage key.
+ * @param {string} key
+ * @returns {{gains: Float32Array|null, timestamp: number, type: string}|null}
+ */
+function _loadFromKey(key) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
 
     const parsed = JSON.parse(raw);
