@@ -99,7 +99,74 @@ export class SpectrumAnalyzer {
     return this;
   }
 
+  /**
+   * Start continuous spectral measurement with power-domain averaging.
+   *
+   * Polls getFloatFrequencyData at intervalMs intervals, accumulates via
+   * power-domain averaging (same math as recordSegment), and calls the
+   * callback with each accumulated result.
+   *
+   * @param {function} callback - Receives { spectrum: Float32Array, rms: number, elapsedMs: number }
+   * @param {number} intervalMs - Polling interval in milliseconds (default: 500)
+   * @returns {{ stop: () => void }} Control object to halt measurement
+   */
+  measureContinuous(callback, intervalMs = 500) {
+    if (this._measuring) {
+      throw new Error("Measurement already in progress");
+    }
+
+    this._measuring = true;
+    const binCount = FFT_SIZE / 2;
+    const accumulatedPower = new Float32Array(binCount);
+    let frameCount = 0;
+    const startTime = performance.now();
+    let stopped = false;
+
+    const tick = () => {
+      if (stopped) return;
+
+      const data = new Float32Array(binCount);
+      this.analyserNode.getFloatFrequencyData(data);
+
+      // Power-domain accumulation (identical math to recordSegment)
+      for (let i = 0; i < binCount; i++) {
+        accumulatedPower[i] += Math.pow(10, data[i] / 10);
+      }
+      frameCount++;
+
+      // Convert average back to dB
+      const spectrum = new Float32Array(binCount);
+      for (let i = 0; i < binCount; i++) {
+        const avgPower = accumulatedPower[i] / frameCount;
+        spectrum[i] = 10 * Math.log10(avgPower);
+      }
+
+      const rms = this.getRMSLevel();
+      const elapsedMs = performance.now() - startTime;
+
+      callback({ spectrum, rms, elapsedMs });
+
+      if (!stopped) {
+        setTimeout(tick, intervalMs);
+      }
+    };
+
+    tick();
+
+    return {
+      stop: () => {
+        stopped = true;
+        this._measuring = false;
+      }
+    };
+  }
+
   async recordSegment(duration = 3) {
+    // Mutex: prevent recordSegment while continuous measurement is active
+    if (this._measuring) {
+      throw new Error("Measurement already in progress");
+    }
+
     const framesPerBuffer = FFT_SIZE;
     const totalFrames = Math.ceil((duration * this.audioContext.sampleRate) / framesPerBuffer);
     const frequencyData = new Float32Array(FFT_SIZE / 2);
@@ -240,6 +307,34 @@ export class SpectrumAnalyzer {
 
     const ratio = (logTarget - logLower) / (logUpper - logLower);
     return lower.db + ratio * (upper.db - lower.db);
+  }
+
+  /**
+   * Compute the power-averaged noise floor level from the stored noiseBuffer.
+   *
+   * Converts each bin from dB to linear power, averages the power across
+   * all valid bins (> -100 dB), then converts back to dB.
+   *
+   * @returns {number} Noise floor level in dB, or -100 if no noise buffer
+   */
+  getNoiseFloorRMS() {
+    if (!this.noiseBuffer) return -100;
+
+    let totalPower = 0;
+    let validBins = 0;
+
+    for (let i = 0; i < this.noiseBuffer.length; i++) {
+      const db = this.noiseBuffer[i];
+      if (db > -100) {
+        totalPower += Math.pow(10, db / 10);
+        validBins++;
+      }
+    }
+
+    if (validBins === 0) return -100;
+
+    const avgPower = totalPower / validBins;
+    return 10 * Math.log10(avgPower);
   }
 
   async captureSpeaker(duration = 5) {
