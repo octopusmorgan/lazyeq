@@ -1,134 +1,215 @@
 # lazyEq
 
-**Room EQ measurement tool using your phone as a wireless microphone.**
-
-lazyEq plays a logarithmic sine sweep through your speakers, captures it with your phone's microphone via WebRTC, and generates an EQ correction curve — all in the browser.
-
-## Features
-
-- **Dual-device measurement** — PC plays the sweep, phone captures it via WebRTC (no cables)
-- **Logarithmic sine sweep** — 20Hz to 16kHz in 8 seconds with smooth fade-in/fade-out
-- **1/f spectral compensation** — Corrects the natural energy distribution of log sweeps
-- **Multi-sweep averaging** — Run 2-3 sweeps to reduce room mode variation
-- **Practical EQ limits** — ±4dB correction focused on the speaker's effective range (100Hz-8kHz)
-- **Export presets** — Wavelet (Android) and eqMac (macOS) formats
-- **No installation required** — Runs entirely in the browser
+**Room EQ that learns your room in under a minute.**  
+Plays pink noise through your speakers, captures the response with your phone's mic via WebRTC, and generates a correction curve — all in the browser. No install, no cables.
 
 ## Quick Start
 
 ```bash
 npm install
-npm run dev
+npm run dev        # → http://localhost:5173
 ```
 
-Visit `http://localhost:5173` to access the calibration interface.
+Open the link on your PC, grant mic access, tap **Start Calibration**. The app plays pink noise and auto-converges to an EQ curve in 10–30 seconds. Export to Wavelet (Android) or eqMac (macOS) when done.
 
-## How It Works
+## Two Calibration Paths
 
-### 1. Noise Floor Calibration
-Record 5 seconds of room silence to establish the background noise baseline.
+| Path | Sound | Time | Best for |
+|------|-------|------|----------|
+| **Auto-EQ** (pink noise) | Soft, continuous | 10–30s auto-converge | Daily use, quick setup |
+| **Legacy Sweep** (sine sweep) | 8s tone, multi-sweep | 8–30s manual | Power users, diagnostics |
 
-### 2. Sine Sweep Playback
-Play an 8-second logarithmic sweep (20Hz → 16kHz) through your speakers. The phone captures the response via WebRTC.
+### Auto-EQ (Primary Path)
 
-### 3. EQ Curve Generation
-The captured sweep is processed with:
-- **Peak-hold FFT accumulation** during playback
-- **1/f spectral compensation** to flatten the log sweep's natural energy distribution
-- **Noise floor subtraction** using power-domain averaging
-- **Phone mic correction** with a generic MEMS microphone curve
-- **Adaptive smoothing** with effective range limiting (100Hz-8kHz)
+Plays pink noise through your speakers while the microphone captures the response in 500ms windows. Each window produces a correction delta — when the delta stabilizes below 0.5 dB across 3 consecutive windows, calibration is **done**.
 
-### 4. Export
-Download the EQ preset in your preferred format and apply it to your system.
+1. Tap **Start Calibration**
+2. Wait for convergence (watch the `Δ` value drop)
+3. Export your EQ preset
+
+The correction updates in real time: you can hear the EQ shaping as the system converges. The final curve also **persists** to localStorage — reload the page and your last calibration is ready to export.
+
+### Legacy Sweep (Advanced)
+
+8-second logarithmic sine sweep (20 Hz → 16 kHz) with multi-sweep averaging. For when you want full control.
+
+1. **Step 1** — Capture noise floor (5s of silence)
+2. **Step 2** — Play the sweep (select 1–3 sweeps for averaging)
+3. **Step 3** — Export the EQ curve
+
+The sweep section is in a collapsible **Advanced** panel below the main Auto-EQ card.
 
 ## Remote Mic Setup
 
-### LAN Mode (same Wi-Fi network)
+Use your phone as a wireless measurement microphone — no cables needed.
 
-1. Start the signaling server: `npm run signaling`
-2. Start the app: `npm run dev`
-3. Click **"Use Remote Mic"** on the PC
-4. Open the URL shown on your phone's browser
-5. Enter the 4-digit room code
-6. Grant microphone permission when prompted
+### How it works
 
-### Remote Mode (different networks)
+1. On your PC, tap **Use Remote Mic**
+2. A QR code appears — scan it with your phone
+3. Enter the 4-digit room code
+4. Place the phone at ear height, 2–3 m from the speaker
 
-For use over the internet, you'll need a signaling server accessible from both devices. The default setup uses a local WebSocket server on port 3001.
+The phone streams audio to the PC via WebRTC. The PC plays the test signal through your speakers.
+
+### Network Options
+
+| Mode | Setup | Signaling |
+|------|-------|-----------|
+| **LAN** (same Wi-Fi) | `npm run signaling` | Auto-detected via mkcert or local IP |
+| **Tunnel** (remote) | ngrok / loca.lt with HTTPS | Vite's `/signaling` proxy |
+| **HTTPS** (local) | `npm run dev:https` + mkcert certs | Vite proxy, no port 3001 needed |
+
+For HTTPS setup (required for Chrome on phones):
+
+```bash
+brew install mkcert
+mkcert -install
+mkcert 192.168.x.x localhost 127.0.0.1
+mv 192.168.x.x+localhost+127.0.0.1.pem cert.pem
+mv 192.168.x.x+localhost+127.0.0.1-key.pem cert-key.pem
+npm run dev
+```
+
+## Features
+
+- **Auto-EQ with pink noise** — Continuous measurement, real-time convergence detection, no manual sweeps
+- **Adaptive per-band limits** — Detects band-limited speakers and adjusts correction range
+- **Profile persistence** — Dual-slot localStorage with saturation rollback protection
+- **Multi-sweep averaging** — 1–3 sweeps averaged in the compensated domain
+- **Logarithmic sine sweep** — 20 Hz to 16 kHz in 8 seconds, smooth fade-in/out
+- **1/f spectral compensation** — Corrects the natural energy distribution of log sweeps
+- **Noise floor subtraction** — Power-domain averaging with SNR gating
+- **Phone mic correction** — Generic MEMS microphone curve
+- **Practical EQ limits** — ±4 dB correction, 100 Hz–8 kHz effective range
+- **Export presets** — Wavelet (147-band GraphicEQ) and eqMac (10-band peaking EQ) with preamp normalization
+- **No installation** — Runs entirely in the browser
 
 ## Measurement Tips
 
 | Parameter | Recommendation |
 |-----------|----------------|
 | **Phone position** | At ear height, where you normally listen |
-| **Distance** | 2-3 meters from the speaker |
-| **Volume** | 70-80% of max — loud but no distortion |
-| **Sweeps** | 2-3 for averaging (reduces room mode variation) |
-| **Environment** | Quiet room, no background noise |
+| **Distance** | 2–3 meters from the speaker |
+| **Volume** | 70–80% — loud but clean, no distortion |
+| **Environment** | Quiet room, minimal background noise |
+| **Browser** | Firefox recommended for best WebRTC support |
 
 ## Architecture
 
 ```
 src/
-├── main.js              # App entry, UI orchestration, sweep handler
-├── analyzer.js          # FFT analysis, noise floor, mic calibration, AudioWorklet
-├── sineSweep.js         # Logarithmic sine sweep generator
-├── eqGenerator.js       # EQ curve generation, export formats, target curves
-├── constants.js         # Sample rate, FFT size, reference offsets
-├── style.css            # Dark theme UI styles
-├── webrtc/
-│   ├── remoteMic.js     # WebRTC host (PC) and client (phone)
-│   ├── networkDiscovery.js  # LAN network discovery
-│   └── qrCode.js        # QR code generation for phone pairing
-```
+├── main.js                # App entry, UI orchestration, both calibration flows
+├── analyzer.js            # FFT analysis, noise floor, mic calibration, AudioWorklet
+├── sineSweep.js           # Logarithmic sine sweep generator
+├── pinkNoise.js           # Pink noise generator (Paul Kellet's method, looped)
+├── eqGenerator.js         # EQ curve generation, Harman target, export formats
+├── convergence.js         # Rolling window convergence detection for EQ gains
+├── persistence.js         # Dual-slot localStorage profile save/load with rollback
+├── constants.js           # Sample rate, FFT size, calibration thresholds
+├── style.css              # Dark theme, glassmorphism, neon accents (1270 lines)
+└── webrtc/
+    ├── remoteMicHost.js   # WebRTC host (PC side)
+    ├── remoteMicClient.js # WebRTC client (phone side)
+    ├── signalingChannel.js# WebSocket signaling abstraction
+    ├── networkDiscovery.js# LAN IP discovery via WebRTC
+    └── qrCode.js          # QR code generation for phone pairing
 
-```
 server/
-└── signaling.js         # WebSocket relay for WebRTC signaling
+└── signaling.js           # WebSocket relay for WebRTC handshake (WS + WSS)
 
 public/
-└── audio-worklet-processor.js  # AudioWorklet for sweep recording
+└── audio-worklet-processor.js  # AudioWorklet for PCM sweep recording
+
+remote-mic.html           # Standalone entry point for phone mic page
 ```
 
 ## Technology Stack
 
-- **Vite** — Build tool and dev server
-- **Web Audio API** — FFT analysis, sweep generation, AudioWorklet
+- **Vite 6** — Build tool, dev server with HTTPS, multi-page build, WebSocket proxy
+- **Web Audio API** — FFT analysis, pink noise, sine sweeps, AudioWorklet, BiquadFilter
 - **WebRTC** — Real-time audio streaming from phone to PC
 - **WebSocket** — Signaling server for WebRTC handshake
-- **Canvas API** — Real-time spectrum visualization
+- **Canvas API** — Real-time spectrum visualization with log-frequency rendering
 
 ## Algorithm Details
 
+### Pink Noise (Auto-EQ)
+
+Paul Kellet's refined method: 7 cascaded integrators with feedback to produce a -3 dB/octave spectral slope. Pre-generated 10-second buffer looped seamlessly.
+
+### Convergence Detection
+
+Rolling window of 3 measurements. Each window computes mean absolute delta between consecutive gain arrays. Converged when `delta < 0.5 dB` for 2 consecutive comparisons, with a minimum of 4 measurements before convergence is allowed.
+
+### Adaptive Per-Band Limits
+
+For each of the 8 ISO bands (63 Hz–8 kHz), tracks consecutive saturation events. If a band repeatedly requests correction but the measured response doesn't change (speaker can't reproduce that frequency), the band's gain limit is halved (min ±1 dB).
+
 ### Sweep Generation
-Logarithmic sine sweep using the phase formula:
+
+Logarithmic sine sweep using the phase formula (legacy path):
+
 ```
-φ(t) = 2π · f₀ · T · (e^(ln(f₁/f₀)·t/T) - 1) / ln(f₁/f₀)
+φ(t) = 2π · f₀ · T · (e^(ln(f₁/f₀)·t/T) − 1) / ln(f₁/f₀)
 ```
-Where f₀=20Hz, f₁=16kHz, T=8s.
+
+Where f₀ = 20 Hz, f₁ = 16 kHz, T = 8 s.
 
 ### Spectral Compensation
-A log sweep has constant energy per octave, meaning energy per Hz drops as 1/f. We compensate by adding `10·log₁₀(f/f₀)` dB to each FFT bin.
+
+A log sweep has constant energy per octave, so energy per Hz drops as 1/f. Compensated by adding `10 · log₁₀(f/f₀)` dB to each FFT bin.
 
 ### Noise Subtraction
-Power-domain averaging: convert dB to linear power, average, convert back. Subtract noise floor in the linear domain before converting to dB.
+
+Power-domain averaging: dB → linear power → average → back to dB. Noise floor subtracted in the linear domain before converting back to dB.
 
 ### EQ Curve
-- **Target**: Practical "house curve" with gentle bass warmth and treble roll-off
-- **Limits**: ±4dB maximum correction
-- **Effective range**: 100Hz-8kHz with smooth log-space fade-out outside this range
-- **Smoothing**: Adaptive Gaussian with factor 2.5
+
+- **Target**: Harman 2013 house curve with gentle bass warmth and treble roll-off
+- **Limits**: ±4 dB maximum correction (±12 dB in Wavelet export for compatibility)
+- **Effective range**: 100 Hz–8 kHz with smooth log-space fade-out
+- **Smoothing**: Adaptive Gaussian with factor 2.5 (more smoothing in highs, less in bass)
+
+### Profile Persistence
+
+- **Dual-slot**: Current + previous calibration stored in localStorage
+- **Saturation rollback**: If all 8 bands clip at ±4 dB, auto-restores previous profile
+- **Type tracking**: Each profile tagged as `pink-noise` or `sweep`
+
+## Scripts
+
+| Command | Purpose |
+|---------|---------|
+| `npm run dev` | Development server (HTTP) |
+| `npm run dev:https` | Development server (HTTPS, requires certs) |
+| `npm run signaling` | WebSocket signaling server (port 3001) |
+| `npm run signaling:wss` | Secure WebSocket signaling (requires certs) |
+| `npm run build` | Production build (multi-page) |
+| `npm run preview` | Preview production build |
+| `npm test` | Run test suite |
+| `npm run build:test` | Full build + test in CI mode |
 
 ## Browser Support
 
 | Browser | Support |
 |---------|---------|
 | Firefox Android | ✅ Full support |
-| Chrome Android | ✅ Full support |
+| Chrome Android | ✅ Full support (HTTPS only for mic) |
 | Firefox Desktop | ✅ Full support |
 | Chrome Desktop | ✅ Full support |
 | Safari iOS | ⚠️ Limited (WebRTC audio may vary) |
+
+## Package Structure
+
+```
+lazyeq/
+├── docs/           # Architecture docs, strategy docs
+├── tests/          # eqGenerator tests, integration tests, package tests
+├── examples/       # Usage examples
+├── packages/       # Reserved for future package extraction
+├── dist/           # Build output (gitignored)
+```
 
 ## License
 
