@@ -375,8 +375,9 @@ async function loadDevices() {
   }
 }
 
-// Defer loadDevices() to user gesture - don't call at module load
-// P-7: Remove eager call at module load
+// Auto-load devices at startup (enumerateDevices doesn't require permission).
+// Labels may be generic until the user grants mic access, but the devices
+// are immediately selectable. Refresh button handles new hot-plugged devices.
 
 // Refresh button
 btnRefreshDevices.addEventListener("click", async () => {
@@ -1024,8 +1025,12 @@ function resizeCanvases() {
 }
 
 // Step 1: Capture noise floor (legacy sweep path — preserved for Advanced mode)
+let noiseCalibrationInProgress = false;
 if (btnNoise) {
 btnNoise.addEventListener("click", async () => {
+  // Prevent duplicate handlers (Vite HMR can accumulate listeners)
+  if (noiseCalibrationInProgress) return;
+  
   try {
     // Auto-load devices on first user gesture if not loaded yet
     if (!selectedMicDeviceId && micSelect.options.length <= 1 && micSelect.options[0]?.textContent === "Loading devices…") {
@@ -1055,6 +1060,36 @@ btnNoise.addEventListener("click", async () => {
       }
     }
 
+    noiseCalibrationInProgress = true;
+
+    // ── Local mic: obtain stream ONCE and reuse it ──
+    // We use getUserMedia({audio:true}) (generic constraint) to avoid the
+    // ephemeral-deviceId issue where IDs from enumerateDevices() before
+    // permission is granted become invalid after getUserMedia() is called.
+    let localMicStream = null;
+    if (!isRemoteMicActive) {
+      // Check if mic permission was previously blocked (Chrome remembers)
+      try {
+        if (navigator.permissions) {
+          const micPerm = await navigator.permissions.query({ name: "microphone" });
+          if (micPerm.state === "denied") {
+            statusNoise.textContent = "Microphone access was previously blocked for this site. Click the camera/lock icon in the address bar and change it to 'Allow', then try again.";
+            statusNoise.className = "status danger";
+            noiseCalibrationInProgress = false;
+            return;
+          }
+        }
+      } catch (_) { /* Permissions API not available or query failed */ }
+
+      try {
+        localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Re-enumerate now that we have permission — gets real device labels
+        await loadDevices();
+      } catch (permErr) {
+        throw permErr;
+      }
+    }
+
     const remoteLabelNoise = isRemoteMicActive ? " [Remote Mic]" : "";
     statusNoise.textContent = "Step 1 of 3: Please stay quiet for 5 seconds to measure room noise floor..." + remoteLabelNoise;
     statusNoise.className = "status";
@@ -1063,7 +1098,13 @@ btnNoise.addEventListener("click", async () => {
 
     const ctx = await ensureAudioContext();
     analyzer = new SpectrumAnalyzer();
-    await initAnalyzer(ctx);
+
+    if (isRemoteMicActive) {
+      await initAnalyzer(ctx);
+    } else if (localMicStream) {
+      // Pass the pre-obtained stream directly — no second getUserMedia call
+      await analyzer.init(localMicStream, ctx);
+    }
 
     statusNoise.textContent = "Recording noise floor... keep quiet";
     statusNoise.className = "status recording";
@@ -1114,6 +1155,7 @@ await analyzer.captureNoiseFloor(5);
     updateStepIndicator(1, "completed");
     updateStepIndicator(2, "active");
     btnSweep.disabled = false;
+    noiseCalibrationInProgress = false;
   } catch (err) {
     console.error(err);
     if (err.name === "NotAllowedError" || err.message?.includes("permission")) {
@@ -1125,6 +1167,7 @@ await analyzer.captureNoiseFloor(5);
     hideProgressBar("noise");
     updateStepIndicator(1, "pending");
     btnNoise.disabled = false;
+    noiseCalibrationInProgress = false;
   }
 });
 } // end btnNoise guard
@@ -1733,6 +1776,10 @@ async function processSweepResults() {
   updateStepIndicator(2, "completed");
   updateStepIndicator(3, "active");
 
+  // Show results card BEFORE resizing canvases, otherwise getBoundingClientRect
+  // returns 0x0 for hidden elements and graphs render on zero-size bitmaps.
+  if (cardResults) cardResults.classList.remove("hidden");
+
   await new Promise((resolve) => requestAnimationFrame(resolve));
   resizeCanvases();
 
@@ -1786,7 +1833,6 @@ async function processSweepResults() {
   btnExportEqMac.dataset.gains = JSON.stringify(gains);
   btnExportEqMac.dataset.visData = JSON.stringify(visData);
   resultsReady = true;
-  if (cardResults) cardResults.classList.remove("hidden");
 
   // Release microphone after results are ready
   try {
