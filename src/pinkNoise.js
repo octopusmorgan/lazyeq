@@ -49,7 +49,25 @@ export class PinkNoiseSource {
       b5 = -0.9322 * b5;
       b6 = -0.99886 * b6;
 
-      data[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11;
+      data[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
+    }
+
+    // Normalize to peak ±1.0 for maximum signal level
+    let peak = 0;
+    for (let i = 0; i < length; i++) {
+      const abs = Math.abs(data[i]);
+      if (abs > peak) peak = abs;
+    }
+    if (peak > 0) {
+      const scale = 0.99 / peak; // 0.99 to leave 1% headroom
+      for (let i = 0; i < length; i++) {
+        data[i] *= scale;
+      }
+    }
+
+    if (typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
+      const rms = Math.sqrt(data.reduce((s, v) => s + v * v, 0) / data.length);
+      console.log(`[PinkNoise] buffer normalized: peak=${peak.toFixed(3)} → 0.99 | RMS=${rms.toFixed(3)} (${(20*Math.log10(rms)).toFixed(1)} dBFS) | samples=${length}`);
     }
 
     this._buffer = buffer;

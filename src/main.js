@@ -18,8 +18,20 @@ import {
 } from "./eqGenerator.js";
 import { PinkNoiseSource } from "./pinkNoise.js";
 import { ConvergenceDetector } from "./convergence.js";
-import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated } from "./persistence.js";
-import { PINK_NOISE_GAIN, MEASUREMENT_INTERVAL_MS, CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT, SNR_THRESHOLD_DB, MIN_MEASUREMENTS, CALIBRATION_TIMEOUT_MS, SILENCE_THRESHOLD_DB, INITIAL_PER_BAND_GAIN, SATURATION_RATIO_THRESHOLD, SATURATION_CONSECUTIVE_COUNT } from "./constants.js";
+import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated, float32ToArray } from "./persistence.js";
+import { PINK_NOISE_GAIN, MEASUREMENT_INTERVAL_MS, CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT, SNR_THRESHOLD_DB, MIN_MEASUREMENTS, CALIBRATION_TIMEOUT_MS, SILENCE_THRESHOLD_DB, INITIAL_PER_BAND_GAIN, SATURATION_RATIO_THRESHOLD, SATURATION_CONSECUTIVE_COUNT, MIN_SIGNAL_LEVEL_DB, LOW_SIGNAL_WINDOW_COUNT } from "./constants.js";
+import { detectCandidates } from './candidateDetector.js';
+import { rankCandidates } from './candidateRanker.js';
+import { synthesizeBands, evaluateCurveAt, gainsFromBands } from './parametricEqSynthesizer.js';
+import {
+  PEAK_DETECTION_THRESHOLD, NULL_DETECTION_THRESHOLD, NULL_REJECTION_WIDTH_HZ,
+  MERGE_DISTANCE_HZ, RANKING_WEIGHTS, LF_FOCUS_MULTIPLIER, LF_FOCUS_CUTOFF,
+  MAX_CUT_DB, MAX_BOOST_DB, BOOST_CONFIDENCE_THRESHOLD, BOOST_PENALTY,
+  Q_MIN, Q_MAX, MAX_PARAMETRIC_BANDS, LF_MAX_Q,
+  FILTER_POOL_SIZE, FILTER_POOL_SMOOTHING, EVAL_FREQUENCIES, SMART_RESIDUAL_THRESHOLD_DB,
+  USE_SMART_CORRECTION,
+} from './constants.js';
+import { logCalibrationWindow, enableCalibrationLog, logCalibrationError, logCalibrationConverged, isCalibrationDebugEnabled } from './calibrationDebugLog.js';
 
 /**
  * Convert hex color to RGBA string
@@ -57,6 +69,7 @@ let remoteMicHost = null;
 let isRemoteMicActive = false;
 let sweepProcessing = false;
 let sweepProcessTimeout = null;
+let legacyAnimationFrame = null; // Track legacy sweep animation frame for cleanup
 
 // Live pink noise calibration state
 let pinkNoise = null;
@@ -69,10 +82,12 @@ let calibrationStartTime = 0;
 let lowInputWarningCount = 0;
 let cachedTargetCurve = null; // Pre-computed target curve for live canvas
 let lastMeasurementResult = null; // Best result for stop/partial
+let previousCandidateFreqs = null; // Freqs from previous window for stability tracking
+let consecutiveLowSignalCount = 0; // Windows below MIN_SIGNAL_LEVEL_DB
 
 // Phase 2 stability gating state
-let bestResult = null;           // best measurement result (lowest max delta)
-let bestMaxDelta = Infinity;     // lowest max(|deltaGains|) seen
+let bestResult = null;           // best measurement result (lowest residual error)
+let bestMaxDelta = Infinity;     // lowest max(|residual|) seen
 let validMeasurementCount = 0;   // non-SNR-gated windows
 let consecutiveSNRSkips = 0;     // consecutive SNR-gated skips
 let calibrationTimeout = null;   // setTimeout ID for 30s watchdog
@@ -81,6 +96,7 @@ let calibrationTimeout = null;   // setTimeout ID for 30s watchdog
 const ACTIVE_EQ_FREQS = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
 let activeEQFilters = null;   // BiquadFilterNode[] inserted in pink noise path
 let cumulativeEQGains = null; // Float32Array(8) — running total of applied EQ
+let currentParametricBands = null; // ParametricBand[] — current smart correction bands
 
 // Adaptive per-band gain limits (Phase 3)
 let perBandMaxGain = null;     // Float32Array(8), init to 6.0
@@ -1553,19 +1569,10 @@ btnStop.addEventListener("click", async () => {
 });
 } // end btnStop guard
 
-// Practical target curve — gentle "house curve" tilt that matches real listening preference.
-// Unlike a pure flat target, this allows natural bass warmth and smooth treble roll-off.
-// Based on common consumer EQ preferences (slight V-shape with bass emphasis).
-function getPracticalTargetDB(freq) {
-  if (freq < 40) return 1.5;      // Sub-bass: slight lift
-  if (freq < 80) return 1.0;      // Bass: warm
-  if (freq < 200) return 0.5;     // Upper bass: transitioning
-  if (freq < 500) return 0.0;     // Lower mids: reference (0 dB)
-  if (freq < 2000) return 0.0;    // Mids: flat
-  if (freq < 4000) return -0.5;   // Presence: slight dip
-  if (freq < 8000) return -1.0;   // Treble: gentle roll-off
-  if (freq < 12000) return -1.5;  // High treble: more roll-off
-  return -2.0;                     // Ultra highs: natural limitation
+// Calibration target in dB at frequency `freq`.
+// Keep this in sync with the curve shown on the live canvas to avoid visual drift.
+function getCalibrationTargetDB(freq) {
+  return getHarmanTargetDB(Math.max(20, Math.min(20000, freq)));
 }
 
 // Shared processing for sweep results
@@ -1610,18 +1617,23 @@ function _processMeasurementResults(spectrum, options = {}) {
       countRange++;
     }
   }
-  const rangeAvg = countRange > 0 ? sumRange / countRange : 0;
+  const rangeAvg = countRange > 0 ? sumRange / countRange : NaN;
 
   const normalizedResponse = new Float32Array(smoothedResponse.length);
-  for (let i = 0; i < smoothedResponse.length; i++) {
-    normalizedResponse[i] = smoothedResponse[i] - rangeAvg;
+  if (Number.isFinite(rangeAvg)) {
+    for (let i = 0; i < smoothedResponse.length; i++) {
+      normalizedResponse[i] = smoothedResponse[i] - rangeAvg;
+    }
+  } else {
+    // No usable data in effective range — pass through unnormalized
+    normalizedResponse.set(smoothedResponse);
   }
 
   // Calculate gains using a practical target curve with gentle tilt
   const rawGains = new Float32Array(visData.length);
   for (let i = 0; i < visData.length; i++) {
     const freq = visData[i].x;
-    const targetOffset = getPracticalTargetDB(freq);
+    const targetOffset = getCalibrationTargetDB(freq);
     rawGains[i] = targetOffset - normalizedResponse[i];
   }
 
@@ -1887,6 +1899,7 @@ function startLiveCalibration() {
 
   calibrationRunning = true;
   calibrationStartTime = performance.now();
+  enableCalibrationLog(USE_SMART_CORRECTION ? 'smart' : 'legacy');
   lowInputWarningCount = 0;
   lastMeasurementResult = null;
   liveSpectrum = null;
@@ -1898,14 +1911,21 @@ function startLiveCalibration() {
   validMeasurementCount = 0;
   consecutiveSNRSkips = 0;
   calibrationTimeout = null;
+  previousCandidateFreqs = null; // Reset candidate stability tracking
+  consecutiveLowSignalCount = 0; // Reset signal level warning counter
 
   // Pre-calibration health check: quick RMS check before starting
-  if (analyzer && analyzer.getRMSLevel) {
-    const preRms = analyzer.getRMSLevel();
-    if (preRms < SILENCE_THRESHOLD_DB && statusCalibration) {
-      statusCalibration.textContent = "Mic seems silent — check your device. Starting anyway...";
-      statusCalibration.className = "status info";
+  try {
+    if (analyzer && analyzer.getRMSLevel && typeof analyzer.getRMSLevel === 'function') {
+      const preRms = analyzer.getRMSLevel();
+      if (preRms < SILENCE_THRESHOLD_DB && statusCalibration) {
+        statusCalibration.textContent = "Mic seems silent — check your device. Starting anyway...";
+        statusCalibration.className = "status info";
+      }
     }
+  } catch {
+    // getRMSLevel may throw if analyserNode is null (e.g., fresh SpectrumAnalyzer)
+    // Safe to ignore — calibration will proceed with the measurement pipeline
   }
 
   // UI: show stop, hide calibrate, hide previous results
@@ -1930,16 +1950,20 @@ function startLiveCalibration() {
   // Initialize cumulative EQ (starts flat — zero correction)
   cumulativeEQGains = new Float32Array(ACTIVE_EQ_FREQS.length);
 
-  // Create active EQ filter chain — 8 peaking filters inserted in pink noise path
-  activeEQFilters = ACTIVE_EQ_FREQS.map((freq) => {
-    const filter = ctx.createBiquadFilter();
-    filter.type = "peaking";
-    filter.frequency.value = freq;
-    filter.Q.value = 1.0;
-    filter.gain.value = 0;
-    return filter;
-  });
-  // Chain filters in series
+  // Create active EQ filter chain — 16-filter pool (smart correction) or 8 fixed bands (legacy)
+  // LEGACY_8BAND: Original 8-filter creation replaced by filter pool pattern (PR-2)
+  // activeEQFilters = ACTIVE_EQ_FREQS.map((freq) => { ... });
+  activeEQFilters = new Array(FILTER_POOL_SIZE)
+    .fill(null)
+    .map(() => {
+      const filter = ctx.createBiquadFilter();
+      filter.type = "peaking";
+      filter.frequency.value = 1000;
+      filter.Q.value = 1.0;
+      filter.gain.value = 0;
+      return filter;
+    });
+  // Chain all 16 filters in series
   for (let i = 0; i < activeEQFilters.length - 1; i++) {
     activeEQFilters[i].connect(activeEQFilters[i + 1]);
   }
@@ -1957,6 +1981,25 @@ function startLiveCalibration() {
 
   // Initialize mic and start continuous measurement
   initAnalyzer(ctx).then(() => {
+    // Diagnostic: verify pink noise reaches the mic (one-shot FFT check)
+    if (import.meta.env.DEV || isCalibrationDebugEnabled()) {
+      setTimeout(() => {
+        const testSpectrum = analyzer.getCurrentSpectrum();
+        const linearLabels = analyzer.getLinearFrequencyLabels();
+        let peakDb = -Infinity, peakFreq = 0, binsAbove90 = 0, binsAbove100 = 0;
+        for (let i = 0; i < testSpectrum.length; i++) {
+          if (testSpectrum[i] > peakDb) { peakDb = testSpectrum[i]; peakFreq = linearLabels[i]; }
+          if (testSpectrum[i] > -90) binsAbove90++;
+          if (testSpectrum[i] > -100) binsAbove100++;
+        }
+        const rmsNow = analyzer.getRMSLevel();
+        console.log(`[cal-diag] pink noise check: peak=${peakDb.toFixed(1)}dB @${peakFreq.toFixed(0)}Hz | bins>-90dB: ${binsAbove90} | bins>-100dB: ${binsAbove100} | RMS=${rmsNow.toFixed(1)}dB`);
+        if (peakDb < -100) {
+          console.warn('[cal-diag] ⚠️ Pink noise NOT reaching mic — peak below -100 dBFS. Check speaker output.');
+        }
+      }, 1500); // Wait 1.5s for pink noise to stabilize
+    }
+
     // Pre-compute target curve now that analyzer has frequency labels
     computeTargetCurveCache();
 
@@ -1979,16 +2022,132 @@ function startLiveCalibration() {
       }
     }, CALIBRATION_TIMEOUT_MS);
 
-    // Start canvas rendering loop
-    requestAnimationFrame(renderLiveCalibration);
+    // Start canvas rendering loop and store the ID for cleanup
+    animationFrame = requestAnimationFrame(renderLiveCalibration);
   }).catch((err) => {
     console.error("Failed to start live calibration:", err);
     stopCalibration();
     if (statusCalibration) {
-      statusCalibration.textContent = "Could not access microphone. Check permissions and try again.";
+      statusCalibration.textContent = "Calibration failed — " + (err.message || "check console for details") + ". Try refreshing the page.";
       statusCalibration.className = "status danger";
     }
   });
+}
+
+/**
+ * Update the 16-filter pool with parametric EQ bands.
+ * Unused slots are set to gain=0 (flat).
+ * @param {Object[]} bands - ParametricBand[] from synthesizeBands
+ */
+function updateFilterPool(bands) {
+  if (!activeEQFilters || activeEQFilters.length !== FILTER_POOL_SIZE) return;
+  const t = audioContext ? audioContext.currentTime : 0;
+  for (let i = 0; i < FILTER_POOL_SIZE; i++) {
+    const filter = activeEQFilters[i];
+    if (i < bands.length) {
+      filter.frequency.setTargetAtTime(bands[i].freq, t, FILTER_POOL_SMOOTHING);
+      filter.gain.setTargetAtTime(bands[i].gain, t, FILTER_POOL_SMOOTHING);
+      filter.Q.setTargetAtTime(bands[i].Q, t, FILTER_POOL_SMOOTHING);
+    } else {
+      filter.gain.setTargetAtTime(0, t, FILTER_POOL_SMOOTHING);
+    }
+  }
+}
+
+/**
+ * Log-frequency interpolation helper for visualization/correction arrays.
+ * @param {number[]} freqs
+ * @param {Float32Array|number[]} values
+ * @param {number} targetFreq
+ * @returns {number}
+ */
+function interpolateLogFreqValue(freqs, values, targetFreq) {
+  if (!freqs || !values || freqs.length === 0 || values.length === 0) return 0;
+  if (targetFreq <= freqs[0]) return values[0] ?? 0;
+  if (targetFreq >= freqs[freqs.length - 1]) return values[values.length - 1] ?? 0;
+
+  const logTarget = Math.log10(targetFreq);
+  let lo = 0, hi = freqs.length - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    if (Math.log10(freqs[mid]) <= logTarget) lo = mid;
+    else hi = mid;
+  }
+
+  const fLo = freqs[lo];
+  const fHi = freqs[hi];
+  if (fHi <= fLo) return values[lo] ?? 0;
+
+  const t = (logTarget - Math.log10(fLo)) / (Math.log10(fHi) - Math.log10(fLo));
+  const yLo = values[lo] ?? 0;
+  const yHi = values[hi] ?? yLo;
+  return yLo * (1 - t) + yHi * t;
+}
+
+/**
+ * Process pink noise measurement through the smart correction pipeline:
+ * detect → rank → synthesize → evaluate.
+ * @param {Float32Array} normalizedResponse - Smoothed, normalized response (64 pts)
+ * @param {Float32Array} targetCurve - Target dB at each point
+ * @param {number[]} frequencies - Hz labels matching response/target
+ * @returns {{ bands: ParametricBand[], gains: Float32Array, evalGains: Float32Array, evalResiduals: Float32Array, candidates: RankedCandidate[] }}
+ */
+function _processPinkNoiseSmartCorrection(normalizedResponse, targetCurve, frequencies, previousCandidateFreqs = null) {
+  // 1. Detect candidates
+  const candidates = detectCandidates(normalizedResponse, targetCurve, frequencies, {
+    peakThreshold: PEAK_DETECTION_THRESHOLD,
+    nullThreshold: NULL_DETECTION_THRESHOLD,
+    nullRejectionWidth: NULL_REJECTION_WIDTH_HZ,
+    mergeDistance: MERGE_DISTANCE_HZ,
+    effectiveRange: { low: 100, high: 8000 },
+  });
+
+  // Inject stability from previous window: persistent candidates get a boost,
+  // transient (new) candidates get a penalty. This reduces band toggling.
+  if (previousCandidateFreqs && previousCandidateFreqs.length > 0) {
+    for (const c of candidates) {
+      const isPersistent = previousCandidateFreqs.some(
+        prevFreq => Math.abs(c.freq - prevFreq) / Math.max(prevFreq, 20) < 0.3
+      );
+      c.stability = isPersistent ? 1.5 : 0.7;
+    }
+  }
+
+  // 2. Rank candidates
+  const rankedCandidates = rankCandidates(candidates, {
+    weights: RANKING_WEIGHTS,
+    lfMultiplier: LF_FOCUS_MULTIPLIER,
+    lfCutoff: LF_FOCUS_CUTOFF,
+    maxBands: MAX_PARAMETRIC_BANDS,
+  });
+
+  // 3. Synthesize parametric bands
+  const { bands, gains } = synthesizeBands(rankedCandidates, frequencies, {
+    maxCutDb: MAX_CUT_DB,
+    maxBoostDb: MAX_BOOST_DB,
+    boostConfidenceThreshold: BOOST_CONFIDENCE_THRESHOLD,
+    boostPenalty: BOOST_PENALTY,
+    qMin: Q_MIN,
+    qMax: Q_MAX,
+    maxBands: MAX_PARAMETRIC_BANDS,
+    lfMaxQ: LF_MAX_Q,
+    lfCutoff: LF_FOCUS_CUTOFF,
+  });
+
+  // 4. Evaluate at convergence frequencies for ConvergenceDetector
+  const evalGains = evaluateCurveAt(bands, EVAL_FREQUENCIES);
+  const evalResiduals = new Float32Array(EVAL_FREQUENCIES.length);
+  for (let i = 0; i < EVAL_FREQUENCIES.length; i++) {
+    const freq = EVAL_FREQUENCIES[i];
+    const responseAtFreq = interpolateLogFreqValue(frequencies, normalizedResponse, freq);
+    const targetAtFreq = interpolateLogFreqValue(frequencies, targetCurve, freq);
+    const estimatedAfterEq = responseAtFreq + evalGains[i];
+    evalResiduals[i] = targetAtFreq - estimatedAfterEq;
+  }
+
+  // 5. gains is already a Float32Array at all visData frequencies for the canvas
+
+  return { bands, gains, evalGains, evalResiduals, candidates: rankedCandidates };
 }
 
 /**
@@ -1996,6 +2155,13 @@ function startLiveCalibration() {
  * @param {{spectrum: Float32Array, rms: number, elapsedMs: number}} result
  */
 function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
+  // Guard: analyzer may be null after calibration completes (race condition)
+  if (!analyzer) return;
+
+  // Capture analyzer values once at the top (may become null after convergence)
+  const noiseFloorRms = analyzer.getNoiseFloorRMS();
+  const linearLabels = analyzer.getLinearFrequencyLabels();
+
   // Timeout check: if we've exceeded the watchdog, stop with last result
   if (elapsedMs > CALIBRATION_TIMEOUT_MS) {
     if (lastMeasurementResult) {
@@ -2011,9 +2177,8 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
   }
 
   // SNR gating: compute noise floor and skip if SNR is too low
-  const noiseFloorRMS = analyzer.getNoiseFloorRMS();
-  if (noiseFloorRMS > -100) {
-    const snr = rms - noiseFloorRMS;
+  if (noiseFloorRms > -100) {
+    const snr = rms - noiseFloorRms;
     if (snr < SNR_THRESHOLD_DB) {
       consecutiveSNRSkips++;
       if (consecutiveSNRSkips >= 20 && statusCalibration) {
@@ -2050,147 +2215,308 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
     if (!isFinite(corrected[i])) corrected[i] = -120;
   }
 
-  const result = _processMeasurementResults(corrected, {
-    method: 'pink-noise',
-    gainLimits: { maxGain: 4, maxCut: -4, bassMax: 4 },
-    perBandMaxGain: perBandMaxGain,
-    perBandMaxCut: perBandMaxCut,
-    smoothingFactor: 2.5,
-    effectiveRange: { low: 100, high: 8000 }
-  });
+  // ── Branch: Smart Correction vs Legacy 8-band path ───────────────────
+  if (USE_SMART_CORRECTION) {
+    try {
+    // SMART CORRECTION PATH: detect → rank → synthesize → filter pool
+    const processResult = _processMeasurementResults(corrected, {
+      method: 'pink-noise',
+      gainLimits: { maxGain: 4, maxCut: -4, bassMax: 4 },
+      perBandMaxGain: perBandMaxGain,
+      perBandMaxCut: perBandMaxCut,
+      smoothingFactor: 2.5,
+      effectiveRange: { low: 100, high: 8000 }
+    });
 
-  // ── Active EQ: interpolate gains to filter bands and update ──────────
-  const deltaGains = new Float32Array(ACTIVE_EQ_FREQS.length);
-  for (let f = 0; f < ACTIVE_EQ_FREQS.length; f++) {
-    const targetFreq = ACTIVE_EQ_FREQS[f];
-    // Find nearest point in visData
-    let gain = 0;
-    const point = result.visData.find(v => Math.abs(v.x - targetFreq) < targetFreq * 0.15);
-    if (point) {
-      const idx = result.visData.indexOf(point);
-      gain = result.gains[idx];
-    }
-    deltaGains[f] = gain;
-  }
-
-  // ── Adaptive per-band saturation detection (Phase 3) ─────────────────
-  if (perBandSaturationCount && prevBandCorrected) {
-    const binWidth = analyzer.audioContext.sampleRate / analyzer.analyserNode.fftSize;
-    for (let f = 0; f < ACTIVE_EQ_FREQS.length; f++) {
-      const bin = Math.round(ACTIVE_EQ_FREQS[f] / binWidth);
-      const currResp = corrected[bin];
-      const expected = deltaGains[f];
-      const actual = isFinite(prevBandCorrected[f]) && isFinite(currResp)
-        ? currResp - prevBandCorrected[f]
-        : 0;
-
-      // Detect saturation: boost expected improvement but got much less
-      if (Math.abs(expected) > 1.0 && Math.abs(actual) < Math.abs(expected) * SATURATION_RATIO_THRESHOLD) {
-        perBandSaturationCount[f]++;
-        if (perBandSaturationCount[f] >= SATURATION_CONSECUTIVE_COUNT) {
-          if (expected > 0) {
-            perBandMaxGain[f] = Math.max(1.0, perBandMaxGain[f] * 0.75);
-          } else {
-            perBandMaxCut[f] = Math.min(-1.0, perBandMaxCut[f] * 0.75);
-          }
-          perBandSaturationCount[f] = 0; // reset after adjustment
-        }
-      } else {
-        perBandSaturationCount[f] = 0;
+    // Signal level guard: skip correction only when truly no usable signal
+    // rangeAvg can be negative when normalized response has more energy in highs
+    // (normal for laptop speakers). Check raw signal strength instead.
+    const hasUsableSignal = processResult.visData.some((v, i) => {
+      const freq = v.x;
+      const val = processResult.normalizedResponse[i];
+      return freq >= 100 && freq <= 8000 && Number.isFinite(val) && val > -30;
+    });
+    const isLowSignal = !hasUsableSignal;
+    if (isLowSignal) {
+      consecutiveLowSignalCount++;
+      if (consecutiveLowSignalCount >= LOW_SIGNAL_WINDOW_COUNT && statusCalibration) {
+        statusCalibration.textContent = "Mic isn't receiving the speaker signal — try moving closer or check audio output device.";
+        statusCalibration.className = "status danger";
       }
-      prevBandCorrected[f] = currResp;
+      // Update UI with flat EQ (no correction) but keep canvas and state alive
+      liveSpectrum = spectrum;
+      liveEQGains = new Float32Array(ACTIVE_EQ_FREQS.length);
+      lastMeasurementResult = { ...processResult, gains: liveEQGains };
+      if (calibrationDelta) calibrationDelta.textContent = 'Δ — dB';
+      // Still feed convergence detector to keep it alive
+      if (convergenceDetector) convergenceDetector.push(new Float32Array(EVAL_FREQUENCIES.length));
+
+      // Log with empty bands (no correction applied)
+      logCalibrationWindow({
+        mode: 'smart',
+        elapsedMs,
+        rms,
+        noiseFloorRms,
+        rangeAvg: processResult.rangeAvg,
+        linearLabels,
+        rawSpectrum: spectrum,
+        correctedSpectrum: corrected,
+        normalizedResponse: processResult.normalizedResponse,
+        visFreqs: processResult.visData.map(v => v.x),
+        targetCurve: new Float32Array(0),
+        bands: [],
+      });
+    } else {
+      consecutiveLowSignalCount = 0;
+
+      // Build target curve at visData frequencies for candidate detection
+      const targetCurve = new Float32Array(processResult.visData.length);
+      const freqs = processResult.visData.map(v => v.x);
+      for (let i = 0; i < targetCurve.length; i++) {
+        targetCurve[i] = getCalibrationTargetDB(freqs[i]);
+      }
+
+      const smartResult = _processPinkNoiseSmartCorrection(
+        processResult.normalizedResponse,
+        targetCurve,
+        freqs,
+        previousCandidateFreqs
+      );
+
+      // Persist candidate frequencies for next window's stability tracking
+      previousCandidateFreqs = smartResult.candidates.map(c => c.freq);
+
+      // Update filter pool with parametric bands
+      updateFilterPool(smartResult.bands);
+
+      // Store parametric bands for profile saving (PR-3)
+      currentParametricBands = smartResult.bands;
+
+      // Set cumulative EQ gains directly (smart correction recalculates each window)
+      cumulativeEQGains = smartResult.gains;
+
+      // Update shared state for canvas rendering
+      liveSpectrum = spectrum;
+      liveEQGains = smartResult.gains;
+      lastMeasurementResult = { ...processResult, gains: smartResult.gains };
+
+      // Track best result (lowest max |evalResiduals|)
+      const currentMax = Math.max(...Array.from(smartResult.evalResiduals).map(Math.abs));
+      if (!bestResult || currentMax < bestMaxDelta) {
+        bestResult = lastMeasurementResult;
+        bestMaxDelta = currentMax;
+      }
+
+      // Feed convergence detector with residual error at evaluation frequencies
+      let isStable = false;
+      if (convergenceDetector) {
+        const convergenceResult = convergenceDetector.push(smartResult.evalResiduals);
+
+        const maxResidual = Math.max(...Array.from(smartResult.evalResiduals).map(Math.abs));
+        isStable = convergenceResult.converged
+          && validMeasurementCount >= MIN_MEASUREMENTS
+          && maxResidual <= SMART_RESIDUAL_THRESHOLD_DB
+          && consecutiveLowSignalCount < LOW_SIGNAL_WINDOW_COUNT;
+
+        if (import.meta.env.DEV) {
+          console.log(`  Δres = ${convergenceResult.delta.toFixed(2)} dB | max|res| = ${maxResidual.toFixed(1)} dB | bands=${smartResult.bands.length} cand=${smartResult.candidates.length} ${isStable ? '✅ CONVERGED' : ''}`);
+        }
+
+        if (calibrationDelta) {
+          calibrationDelta.textContent = 'Δres ' + convergenceResult.delta.toFixed(1) + ' dB';
+        }
+
+        if (isStable) {
+          logCalibrationConverged(elapsedMs);
+          onCalibrationComplete(lastMeasurementResult);
+        }
+      }
+
+      // Log with actual bands from smart correction
+      logCalibrationWindow({
+        mode: 'smart',
+        elapsedMs,
+        rms,
+        noiseFloorRms,
+        rangeAvg: processResult.rangeAvg,
+        linearLabels,
+        rawSpectrum: spectrum,
+        correctedSpectrum: corrected,
+        normalizedResponse: processResult.normalizedResponse,
+        visFreqs: processResult.visData.map(v => v.x),
+        targetCurve,
+        bands: smartResult.bands,
+      });
     }
-  }
-  // ── End adaptive per-band saturation detection ───────────────────────
-
-  // Apply cumulative EQ with per-band limits
-  for (let f = 0; f < ACTIVE_EQ_FREQS.length; f++) {
-    // Accumulate and clamp using per-band limits if available
-    cumulativeEQGains[f] += deltaGains[f];
-    const bandMax = perBandMaxGain ? perBandMaxGain[f] : 4;
-    const bandMin = perBandMaxCut ? perBandMaxCut[f] : -4;
-    cumulativeEQGains[f] = Math.max(bandMin, Math.min(bandMax, cumulativeEQGains[f]));
-    // Apply to filter
-    if (activeEQFilters && activeEQFilters[f]) {
-      activeEQFilters[f].gain.value = cumulativeEQGains[f];
+    } catch (err) {
+      console.error("[SmartCorrection] Error in measurement window — skipping:", err);
+      logCalibrationError(err);
     }
-  }
-  // ── End active EQ update ──────────────────────────────────────────────
+  } else {
+    // FALLBACK: existing per-point gain computation (unchanged)
+    const result = _processMeasurementResults(corrected, {
+      method: 'pink-noise',
+      gainLimits: { maxGain: 4, maxCut: -4, bassMax: 4 },
+      perBandMaxGain: perBandMaxGain,
+      perBandMaxCut: perBandMaxCut,
+      smoothingFactor: 2.5,
+      effectiveRange: { low: 100, high: 8000 }
+    });
 
-  // ── Diagnostic logs ──────────────────────────────────────────────────
-  if (import.meta.env.DEV) {
-    const binWidth = analyzer.audioContext.sampleRate / analyzer.analyserNode.fftSize;
-    const keyFreqs = ACTIVE_EQ_FREQS;
-    const elapsed = (elapsedMs / 1000).toFixed(1);
+    const legacyVisFreqs = result.visData.map((v) => v.x);
+    const legacyTarget = new Float32Array(legacyVisFreqs.length);
+    for (let i = 0; i < legacyTarget.length; i++) {
+      legacyTarget[i] = getCalibrationTargetDB(legacyVisFreqs[i]);
+    }
+    logCalibrationWindow({
+      mode: 'legacy',
+      elapsedMs,
+      rms,
+      noiseFloorRms,
+      rangeAvg: result.rangeAvg,
+      linearLabels,
+      rawSpectrum: spectrum,
+      correctedSpectrum: corrected,
+      normalizedResponse: result.normalizedResponse,
+      visFreqs: legacyVisFreqs,
+      targetCurve: legacyTarget,
+      pointwiseEqGains: Float32Array.from(result.gains),
+    });
 
-    // Raw spectrum at key frequencies
-    const rawVals = keyFreqs.map(f => {
-      const bin = Math.round(f / binWidth);
-      return spectrum[bin]?.toFixed(1) ?? '---';
-    }).join(' | ');
+    // ── Active EQ: interpolate gains to filter bands and update ──────────
+    const deltaGains = new Float32Array(ACTIVE_EQ_FREQS.length);
+    for (let f = 0; f < ACTIVE_EQ_FREQS.length; f++) {
+      const targetFreq = ACTIVE_EQ_FREQS[f];
+      // Find nearest point in visData
+      let gain = 0;
+      const point = result.visData.find(v => Math.abs(v.x - targetFreq) < targetFreq * 0.15);
+      if (point) {
+        const idx = result.visData.indexOf(point);
+        gain = result.gains[idx];
+      }
+      deltaGains[f] = gain;
+    }
 
-    // Corrected (noise-subtracted + mic-corrected) at key frequencies
-    const corVals = keyFreqs.map(f => {
-      const bin = Math.round(f / binWidth);
-      return corrected[bin]?.toFixed(1) ?? '---';
-    }).join(' | ');
+    // ── Adaptive per-band saturation detection (Phase 3) ─────────────────
+    if (perBandSaturationCount && prevBandCorrected) {
+      const binWidth = analyzer.audioContext.sampleRate / analyzer.analyserNode.fftSize;
+      for (let f = 0; f < ACTIVE_EQ_FREQS.length; f++) {
+        const bin = Math.round(ACTIVE_EQ_FREQS[f] / binWidth);
+        const currResp = corrected[bin];
+        const expected = deltaGains[f];
+        const actual = isFinite(prevBandCorrected[f]) && isFinite(currResp)
+          ? currResp - prevBandCorrected[f]
+          : 0;
 
-    // Delta gains (new correction needed this iteration)
-    const dVals = keyFreqs.map((_, i) => {
-      const g = deltaGains[i];
-      return (g >= 0 ? '+' : '') + g.toFixed(1);
-    }).join(' | ');
+        // Detect saturation: boost expected improvement but got much less
+        if (Math.abs(expected) > 1.0 && Math.abs(actual) < Math.abs(expected) * SATURATION_RATIO_THRESHOLD) {
+          perBandSaturationCount[f]++;
+          if (perBandSaturationCount[f] >= SATURATION_CONSECUTIVE_COUNT) {
+            if (expected > 0) {
+              perBandMaxGain[f] = Math.max(1.0, perBandMaxGain[f] * 0.75);
+            } else {
+              perBandMaxCut[f] = Math.min(-1.0, perBandMaxCut[f] * 0.75);
+            }
+            perBandSaturationCount[f] = 0; // reset after adjustment
+          }
+        } else {
+          perBandSaturationCount[f] = 0;
+        }
+        prevBandCorrected[f] = currResp;
+      }
+    }
+    // ── End adaptive per-band saturation detection ───────────────────────
 
-    // Cumulative EQ (total applied so far)
-    const cVals = keyFreqs.map((_, i) => {
-      const g = cumulativeEQGains[i];
-      return (g >= 0 ? '+' : '') + g.toFixed(1);
-    }).join(' | ');
+    // Apply cumulative EQ with per-band limits
+    for (let f = 0; f < ACTIVE_EQ_FREQS.length; f++) {
+      // Accumulate and clamp using per-band limits if available
+      cumulativeEQGains[f] += deltaGains[f];
+      const bandMax = perBandMaxGain ? perBandMaxGain[f] : 4;
+      const bandMin = perBandMaxCut ? perBandMaxCut[f] : -4;
+      cumulativeEQGains[f] = Math.max(bandMin, Math.min(bandMax, cumulativeEQGains[f]));
+      // Apply to filter
+      if (activeEQFilters && activeEQFilters[f]) {
+        activeEQFilters[f].gain.value = cumulativeEQGains[f];
+      }
+    }
+    // ── End active EQ update ──────────────────────────────────────────────
 
-    console.log(
-      `[t=${elapsed}s] RMS=${rms.toFixed(0)}dB\n` +
-      `  Freq (Hz):   ${keyFreqs.map(f => String(f).padStart(5)).join(' | ')}\n` +
-      `  Raw:         ${rawVals}\n` +
-      `  Corrected:   ${corVals}\n` +
-      `  Δ needed:    ${dVals}\n` +
-      `  Cumulative:  ${cVals}`
-    );
-  }
-  // ── End diagnostic logs ──────────────────────────────────────────────
-
-  // Track best result (lowest max |deltaGains|)
-  const currentMax = Math.max(...Array.from(deltaGains).map(Math.abs));
-  if (!bestResult || currentMax < bestMaxDelta) {
-    bestResult = result;
-    bestMaxDelta = currentMax;
-  }
-
-  // Update shared state for canvas rendering
-  liveSpectrum = spectrum;
-  liveEQGains = result.gains;
-  lastMeasurementResult = result;
-
-  // Feed convergence detector with delta gains (how much correction is still needed)
-  if (convergenceDetector) {
-    const { converged, delta } = convergenceDetector.push(deltaGains);
-
-    // Active convergence: delta small AND corrections near zero
-    const maxCorrection = Math.max(...Array.from(deltaGains).map(Math.abs));
-    const isStable = converged && maxCorrection < 1.0;
-
+    // ── Diagnostic logs ──────────────────────────────────────────────────
     if (import.meta.env.DEV) {
-      console.log(`  Δ = ${delta.toFixed(2)} dB | max|corr| = ${maxCorrection.toFixed(1)} dB ${isStable ? '✅ CONVERGED' : ''}`);
+      const binWidth = analyzer.audioContext.sampleRate / analyzer.analyserNode.fftSize;
+      const keyFreqs = ACTIVE_EQ_FREQS;
+      const elapsed = (elapsedMs / 1000).toFixed(1);
+
+      // Raw spectrum at key frequencies
+      const rawVals = keyFreqs.map(f => {
+        const bin = Math.round(f / binWidth);
+        return spectrum[bin]?.toFixed(1) ?? '---';
+      }).join(' | ');
+
+      // Corrected (noise-subtracted + mic-corrected) at key frequencies
+      const corVals = keyFreqs.map(f => {
+        const bin = Math.round(f / binWidth);
+        return corrected[bin]?.toFixed(1) ?? '---';
+      }).join(' | ');
+
+      // Delta gains (new correction needed this iteration)
+      const dVals = keyFreqs.map((_, i) => {
+        const g = deltaGains[i];
+        return (g >= 0 ? '+' : '') + g.toFixed(1);
+      }).join(' | ');
+
+      // Cumulative EQ (total applied so far)
+      const cVals = keyFreqs.map((_, i) => {
+        const g = cumulativeEQGains[i];
+        return (g >= 0 ? '+' : '') + g.toFixed(1);
+      }).join(' | ');
+
+      console.log(
+        `[t=${elapsed}s] RMS=${rms.toFixed(0)}dB\n` +
+        `  Freq (Hz):   ${keyFreqs.map(f => String(f).padStart(5)).join(' | ')}\n` +
+        `  Raw:         ${rawVals}\n` +
+        `  Corrected:   ${corVals}\n` +
+        `  Δ needed:    ${dVals}\n` +
+        `  Cumulative:  ${cVals}`
+      );
+    }
+    // ── End diagnostic logs ──────────────────────────────────────────────
+
+    // Track best result (lowest max |deltaGains|)
+    const currentMax = Math.max(...Array.from(deltaGains).map(Math.abs));
+    if (!bestResult || currentMax < bestMaxDelta) {
+      bestResult = result;
+      bestMaxDelta = currentMax;
     }
 
-    // Update delta label
-    if (calibrationDelta) {
-      calibrationDelta.textContent = 'Δ ' + delta.toFixed(1) + ' dB';
-    }
+    // Update shared state for canvas rendering
+    liveSpectrum = spectrum;
+    liveEQGains = result.gains;
+    lastMeasurementResult = result;
 
-    if (isStable) {
-      onCalibrationComplete(result);
+    // Feed convergence detector with delta gains (how much correction is still needed)
+    if (convergenceDetector) {
+      const { converged, delta } = convergenceDetector.push(deltaGains);
+
+      // Active convergence: delta small AND corrections near zero
+      const maxCorrection = Math.max(...Array.from(deltaGains).map(Math.abs));
+      const isStable = converged && maxCorrection < 1.0;
+
+      if (import.meta.env.DEV) {
+        console.log(`  Δ = ${delta.toFixed(2)} dB | max|corr| = ${maxCorrection.toFixed(1)} dB ${isStable ? '✅ CONVERGED' : ''}`);
+      }
+
+      // Update delta label
+      if (calibrationDelta) {
+        calibrationDelta.textContent = 'Δ ' + delta.toFixed(1) + ' dB';
+      }
+
+      if (isStable) {
+        onCalibrationComplete(result);
+      }
     }
   }
+  // ── End branching ──────────────────────────────────────────────────────
 }
 
 /**
@@ -2218,7 +2544,13 @@ function onCalibrationComplete(result, options = {}) {
   calibrationRunning = false;
 
   // Save profile with dual-slot + saturation rollback
-  const saveResult = saveProfile({ gains: result.gains, timestamp: Date.now(), type: 'pink-noise' });
+  // Profile format: { gains, timestamp, type: 'pink-noise', bands?: ParametricBand[] }
+  const saveResult = saveProfile({
+    gains: float32ToArray(cumulativeEQGains),
+    timestamp: Date.now(),
+    type: 'pink-noise',
+    bands: currentParametricBands,
+  });
 
   // Show results
   showResults(result, { timedOut: options.timedOut, rolledBack: saveResult.rolledBack });
@@ -2378,6 +2710,18 @@ function stopCalibration() {
     calibrationTimeout = null;
   }
 
+  // Cancel any pending animation frame to prevent resource leak
+  if (animationFrame) {
+    cancelAnimationFrame(animationFrame);
+    animationFrame = null;
+  }
+
+  // Release audio resources
+  if (analyzer && analyzer.destroy) {
+    analyzer.destroy();
+    analyzer = null;
+  }
+
   if (!calibrationRunning && !pinkNoise && !continuousMeasurement) return;
 
   if (pinkNoise) {
@@ -2395,6 +2739,7 @@ function stopCalibration() {
   calibrationRunning = false;
   activeEQFilters = null;
   cumulativeEQGains = null;
+  currentParametricBands = null;
 
   // Reset adaptive per-band gain limits (Phase 3)
   perBandMaxGain = null;
@@ -2415,7 +2760,12 @@ function stopCalibration() {
     }
     // Build result using cumulative EQ gains mapped to visData points
     const partialResult = _buildPartialResult(lastMeasurementResult, savedCumulativeGains);
-    saveProfile({ gains: partialResult.gains, timestamp: Date.now(), type: 'pink-noise' });
+    saveProfile({
+      gains: partialResult.gains,
+      timestamp: Date.now(),
+      type: 'pink-noise',
+      bands: currentParametricBands,
+    });
     showResults(partialResult);
     renderLiveCalibrationFinal();
   } else {
@@ -2434,7 +2784,7 @@ function stopCalibration() {
 
 /**
  * Live canvas rendering — called via requestAnimationFrame.
- * Draws 3 lines: target curve (cached), spectrum (updating), EQ (converging).
+ * Draws 3 lines: target curve (cached), room response (updating), estimated response after EQ.
  */
 function renderLiveCalibration(timestamp, final = false) {
   if (!calibrationRunning && !final) return;
@@ -2528,15 +2878,15 @@ function renderLiveCalibration(timestamp, final = false) {
     drawLine(spectrumPoints, "#ff6b6b");
   }
 
-  // Line 3: EQ correction curve (converging, cyan)
-  if (liveEQGains && cachedTargetCurve) {
-    // Map EQ gains (64 points) to frequency points using the same log spacing
-    const eqPoints = [];
-    for (let i = 0; i < liveEQGains.length; i++) {
-      const freq = 20 * Math.pow(20000 / 20, i / (liveEQGains.length - 1));
-      eqPoints.push({ x: freq, y: liveEQGains[i] });
+  // Line 3: Estimated response after EQ (room + correction, cyan)
+  if (lastMeasurementResult?.normalizedResponse && lastMeasurementResult?.visData && liveEQGains) {
+    const estimatedPoints = [];
+    const freqs = lastMeasurementResult.visData.map((v) => v.x);
+    for (let i = 0; i < freqs.length; i++) {
+      const y = lastMeasurementResult.normalizedResponse[i] + (liveEQGains[i] || 0);
+      estimatedPoints.push({ x: freqs[i], y });
     }
-    drawLine(eqPoints, "#00f5d4");
+    drawLine(estimatedPoints, "#00f5d4");
   }
 
   // Legend (top-left corner)
@@ -2546,7 +2896,7 @@ function renderLiveCalibration(timestamp, final = false) {
   const legendItems = [
     { color: "#6a6a7a", label: "Target", dashed: true },
     { color: "#ff6b6b", label: "Room Response" },
-    { color: "#00f5d4", label: "Correction" },
+    { color: "#00f5d4", label: "Estimated" },
   ];
   for (const item of legendItems) {
     ctx.save();
@@ -2623,6 +2973,16 @@ function restorePersistedProfile() {
     } else {
       statusCalibration.textContent = "Loaded saved calibration (" + Math.round(ageHours) + "h old) — recalibrate for best accuracy.";
       statusCalibration.className = "status info";
+    }
+  }
+
+  // Restore parametric bands if present (smart correction persistence)
+  if (profile.bands && USE_SMART_CORRECTION) {
+    currentParametricBands = profile.bands;
+    try {
+      updateFilterPool(currentParametricBands);
+    } catch {
+      // Filter pool not initialized yet (no audio context) — bands will be applied on next calibration
     }
   }
 
@@ -2771,6 +3131,7 @@ if (btnLegacySweep) {
             accumulatedSpectrum = null;
             frameCount = 0;
             sweepSource = null;
+            stopLegacySweepRendering(); // Clean up animation frame
             resolve();
           };
 
@@ -2841,7 +3202,7 @@ function renderLiveSweepOnCanvas(canvas) {
 
   const data = analyzer.getCurrentSpectrum();
   if (!data) {
-    requestAnimationFrame(() => renderLiveSweepOnCanvas(canvas));
+    legacyAnimationFrame = requestAnimationFrame(() => renderLiveSweepOnCanvas(canvas));
     return;
   }
 
@@ -2887,9 +3248,19 @@ function renderLiveSweepOnCanvas(canvas) {
   ctx.stroke();
   ctx.restore();
 
-  // Continue rendering while sweep is active
+  // Continue rendering while sweep is active, with proper tracking
   if (sweepSource) {
-    requestAnimationFrame(() => renderLiveSweepOnCanvas(canvas));
+    legacyAnimationFrame = requestAnimationFrame(() => renderLiveSweepOnCanvas(canvas));
+  }
+}
+
+/**
+ * Stop legacy sweep rendering and clean up animation frame.
+ */
+function stopLegacySweepRendering() {
+  if (legacyAnimationFrame) {
+    cancelAnimationFrame(legacyAnimationFrame);
+    legacyAnimationFrame = null;
   }
 }
 

@@ -12,6 +12,11 @@ export class SpectrumAnalyzer {
     this.sourceNode = null;
     this.noiseBuffer = null;
     this.micCorrectionCurve = null;
+    this._ownsContext = false;
+    this._ownsStream = false;
+    this._measuring = false;
+    this._workletLoaded = false;
+    this._workletFailed = false;
   }
 
   /**
@@ -42,7 +47,28 @@ export class SpectrumAnalyzer {
       existingContext = arg2;
     }
 
+    // Stop old stream tracks if re-initializing (release mic hardware) — only if we own them
+    if (this.stream) {
+      if (this._ownsStream) {
+        this.stream.getTracks().forEach(t => t.stop());
+      }
+      this.stream = null;
+      this._ownsStream = false;
+    }
+
+    // Disconnect old sourceNode if re-initializing
+    if (this.sourceNode) {
+      this.sourceNode.disconnect();
+      this.sourceNode = null;
+    }
+
+    // Close old AudioContext if we owned it and it's different from the new one
+    if (this.audioContext && this._ownsContext && this.audioContext !== existingContext) {
+      this.audioContext.close().catch(() => {});
+    }
+
     // Use existing context or create new one
+    this._ownsContext = !existingContext;
     this.audioContext = existingContext || new (window.AudioContext || window.webkitAudioContext)({
       sampleRate: SAMPLE_RATE
     });
@@ -62,6 +88,7 @@ export class SpectrumAnalyzer {
     if (remoteStream) {
       // Remote mic mode: stream comes from WebRTC (no local getUserMedia needed)
       this.stream = remoteStream;
+      this._ownsStream = false;
       if (import.meta.env.DEV) console.log("Analyzer using REMOTE stream:", remoteStream.id, "tracks:", remoteStream.getAudioTracks().length);
     } else {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -83,6 +110,7 @@ export class SpectrumAnalyzer {
         }
 
         this.stream = await navigator.mediaDevices.getUserMedia(constraints);
+        this._ownsStream = true;
       } catch (err) {
         if (err.name === "NotAllowedError") {
           throw new Error("Mic permission denied");
@@ -100,6 +128,15 @@ export class SpectrumAnalyzer {
   }
 
   /**
+   * Fail-fast guard: throw if the analyzer has not been initialized.
+   */
+  _ensureInitialized() {
+    if (!this.analyserNode) {
+      throw new Error("Analyzer not initialized");
+    }
+  }
+
+  /**
    * Start continuous spectral measurement with power-domain averaging.
    *
    * Polls getFloatFrequencyData at intervalMs intervals, accumulates via
@@ -111,6 +148,7 @@ export class SpectrumAnalyzer {
    * @returns {{ stop: () => void }} Control object to halt measurement
    */
   measureContinuous(callback, intervalMs = 500) {
+    this._ensureInitialized();
     if (this._measuring) {
       throw new Error("Measurement already in progress");
     }
@@ -125,26 +163,32 @@ export class SpectrumAnalyzer {
     const tick = () => {
       if (stopped) return;
 
-      const data = new Float32Array(binCount);
-      this.analyserNode.getFloatFrequencyData(data);
+      try {
+        const data = new Float32Array(binCount);
+        this.analyserNode.getFloatFrequencyData(data);
 
-      // Power-domain accumulation (identical math to recordSegment)
-      for (let i = 0; i < binCount; i++) {
-        accumulatedPower[i] += Math.pow(10, data[i] / 10);
+        // Power-domain accumulation (identical math as recordSegment)
+        for (let i = 0; i < binCount; i++) {
+          accumulatedPower[i] += Math.pow(10, data[i] / 10);
+        }
+        frameCount++;
+
+        // Convert average back to dB
+        const spectrum = new Float32Array(binCount);
+        for (let i = 0; i < binCount; i++) {
+          const avgPower = accumulatedPower[i] / frameCount;
+          spectrum[i] = 10 * Math.log10(avgPower);
+        }
+
+        const rms = this.getRMSLevel();
+        const elapsedMs = performance.now() - startTime;
+
+        callback({ spectrum, rms, elapsedMs });
+      } catch (err) {
+        stopped = true;
+        this._measuring = false;
+        console.error('measureContinuous callback error:', err);
       }
-      frameCount++;
-
-      // Convert average back to dB
-      const spectrum = new Float32Array(binCount);
-      for (let i = 0; i < binCount; i++) {
-        const avgPower = accumulatedPower[i] / frameCount;
-        spectrum[i] = 10 * Math.log10(avgPower);
-      }
-
-      const rms = this.getRMSLevel();
-      const elapsedMs = performance.now() - startTime;
-
-      callback({ spectrum, rms, elapsedMs });
 
       if (!stopped) {
         setTimeout(tick, intervalMs);
@@ -162,56 +206,57 @@ export class SpectrumAnalyzer {
   }
 
   async recordSegment(duration = 3) {
+    if (duration <= 0 || !Number.isFinite(duration)) {
+      throw new Error("recordSegment: duration must be a positive finite number");
+    }
+    this._ensureInitialized();
     // Mutex: prevent recordSegment while continuous measurement is active
     if (this._measuring) {
       throw new Error("Measurement already in progress");
     }
 
+    this._measuring = true;
     const framesPerBuffer = FFT_SIZE;
     const totalFrames = Math.ceil((duration * this.audioContext.sampleRate) / framesPerBuffer);
     const frequencyData = new Float32Array(FFT_SIZE / 2);
     let frameCount = 0;
-    let scheduledFrameTime = 0; // tracks expected time of next frame
 
-    return new Promise((resolve) => {
-      const scheduleNext = (now) => {
-        // Compute delay until the next frame is due.
-        // Using requestAnimationFrame keeps polling alive even when
-        // backgrounded on desktop; audioContext.currentTime is never throttled.
-        const delay = Math.max(0, (scheduledFrameTime - now));
-        setTimeout(() => requestAnimationFrame(processFrame), delay * 1000);
-      };
+    return new Promise((resolve, reject) => {
+      // Use setInterval with audioContext.currentTime for reliable scheduling.
+      // RAF+setTimeout are heavily throttled in background tabs; setInterval
+      // combined with currentTime-based timing keeps recording accurate.
+      const bufferDuration = framesPerBuffer / this.audioContext.sampleRate;
+      const intervalMs = Math.round(bufferDuration * 1000);
 
-      const processFrame = (rafTimestamp) => {
-        const now = this.audioContext.currentTime;
-        const data = new Float32Array(FFT_SIZE / 2);
-        this.analyserNode.getFloatFrequencyData(data);
+      const intervalId = setInterval(() => {
+        try {
+          const data = new Float32Array(FFT_SIZE / 2);
+          this.analyserNode.getFloatFrequencyData(data);
 
-        for (let i = 0; i < data.length; i++) {
-          // Convert dB to linear power and accumulate
-          frequencyData[i] += Math.pow(10, data[i] / 10);
-        }
-
-        frameCount++;
-
-        if (frameCount < totalFrames) {
-          // Advance expected time by one buffer duration
-          scheduledFrameTime = now + (framesPerBuffer / this.audioContext.sampleRate);
-          scheduleNext(now);
-        } else {
-          const result = new Float32Array(FFT_SIZE / 2);
-          for (let i = 0; i < result.length; i++) {
-            // Average in linear power, convert back to dB
-            const avgPower = frequencyData[i] / frameCount;
-            result[i] = 10 * Math.log10(avgPower);
+          for (let i = 0; i < data.length; i++) {
+            // Convert dB to linear power and accumulate
+            frequencyData[i] += Math.pow(10, data[i] / 10);
           }
-          resolve(result);
-        }
-      };
 
-      // Bootstrap: capture start time and begin looping
-      scheduledFrameTime = this.audioContext.currentTime + (framesPerBuffer / this.audioContext.sampleRate);
-      requestAnimationFrame(processFrame);
+          frameCount++;
+
+          if (frameCount >= totalFrames) {
+            clearInterval(intervalId);
+            const result = new Float32Array(FFT_SIZE / 2);
+            for (let i = 0; i < result.length; i++) {
+              // Average in linear power, convert back to dB
+              const avgPower = frequencyData[i] / frameCount;
+              result[i] = 10 * Math.log10(avgPower);
+            }
+            this._measuring = false;
+            resolve(result);
+          }
+        } catch (err) {
+          clearInterval(intervalId);
+          this._measuring = false;
+          reject(err);
+        }
+      }, intervalMs);
     });
   }
 
@@ -348,7 +393,16 @@ export class SpectrumAnalyzer {
    * @param {number} duration - Expected sweep duration in seconds
    * @returns {Promise<Float32Array>} Raw PCM recording of the sweep
    */
-  async recordSweep(duration) {
+  async recordSweep(duration = 3) {
+    if (!Number.isFinite(duration) || duration <= 0) {
+      throw new Error("recordSweep: duration must be a positive finite number");
+    }
+    this._ensureInitialized();
+    if (this._measuring) {
+      throw new Error("Measurement already in progress");
+    }
+
+    this._measuring = true;
     const sampleRate = this.audioContext.sampleRate;
     // Add 500ms buffer for room decay time
     const totalSamples = Math.ceil((duration + 0.5) * sampleRate);
@@ -361,6 +415,8 @@ export class SpectrumAnalyzer {
       } catch (err) {
         console.warn('[Analyzer] AudioWorklet failed to load, falling back to AnalyserNode polling:', err.message);
         this._workletFailed = true;
+        this._workletLoaded = true;
+        this._measuring = false;
         return null;
       }
     }
@@ -368,8 +424,21 @@ export class SpectrumAnalyzer {
     // Create buffer for recording
     const recordingBuffer = new ArrayBuffer(totalSamples * Float32Array.BYTES_PER_ELEMENT);
 
-    // Create worklet node
-    const workletNode = new AudioWorkletNode(this.audioContext, 'sweep-recorder');
+    // Create worklet node — fail fast if worklet previously failed to load
+    if (this._workletFailed) {
+      this._measuring = false;
+      return null;
+    }
+
+    let workletNode;
+    try {
+      workletNode = new AudioWorkletNode(this.audioContext, 'sweep-recorder');
+    } catch (err) {
+      console.warn('[Analyzer] AudioWorkletNode creation failed:', err.message);
+      this._workletFailed = true;
+      this._measuring = false;
+      return null;
+    }
 
     // Mute the output to prevent feedback (mic → worklet → speakers)
     const muteGain = this.audioContext.createGain();
@@ -377,9 +446,21 @@ export class SpectrumAnalyzer {
     workletNode.connect(muteGain);
     muteGain.connect(this.audioContext.destination);
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      const timeoutMs = duration * 1.5 * 1000 + 2000;
+      const timeoutId = setTimeout(() => {
+        this._measuring = false;
+        this.sourceNode?.disconnect(workletNode);
+        workletNode.disconnect();
+        muteGain.disconnect();
+        reject(new Error(`recordSweep timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
       workletNode.port.onmessage = (e) => {
         if (e.data.type === 'recording-complete') {
+          clearTimeout(timeoutId);
+          this._measuring = false;
+          this.sourceNode?.disconnect(workletNode);
           workletNode.disconnect();
           muteGain.disconnect();
           // Reconstruct Float32Array from the transferred ArrayBuffer
@@ -396,7 +477,7 @@ export class SpectrumAnalyzer {
       }, [recordingBuffer]);
 
       // Connect the microphone source to the worklet (splits from existing analyser path)
-      this.sourceNode.connect(workletNode);
+      this.sourceNode?.connect(workletNode);
     });
   }
 
@@ -412,7 +493,7 @@ export class SpectrumAnalyzer {
           result[i] = avgDB[i] - this.micCorrectionCurve[i];
         }
       } else {
-        return avgDB;
+        return new Float32Array(avgDB);
       }
       return result;
     }
@@ -438,7 +519,6 @@ export class SpectrumAnalyzer {
 
   getFrequencyLabels() {
     // Standard ISO 1/3 octave frequencies (20Hz - 20kHz)
-    const labels = [];
     const isoFreqs = [
       20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160,
       200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600,
@@ -448,6 +528,7 @@ export class SpectrumAnalyzer {
   }
 
   getLinearFrequencyLabels() {
+    this._ensureInitialized();
     const labels = [];
     const binWidth = this.audioContext.sampleRate / this.analyserNode.fftSize;
     for (let i = 0; i < FFT_SIZE / 2; i++) {
@@ -457,6 +538,7 @@ export class SpectrumAnalyzer {
   }
 
   getCurrentSpectrum() {
+    this._ensureInitialized();
     // Returns raw spectrum (no mic correction - that's applied later in getCorrectedSpectrumFromDB)
     const data = new Float32Array(FFT_SIZE / 2);
     this.analyserNode.getFloatFrequencyData(data);
@@ -465,6 +547,7 @@ export class SpectrumAnalyzer {
 
   // Get overall dB level using RMS (like realtimesoundmeter)
   getRMSLevel() {
+    this._ensureInitialized();
     const bufferSize = 2048;
     const dataArray = new Float32Array(bufferSize);
     this.analyserNode.getFloatTimeDomainData(dataArray);
@@ -491,23 +574,40 @@ export class SpectrumAnalyzer {
       this.sourceNode = null;
     }
     if (this.stream) {
-      this.stream.getTracks().forEach(t => t.stop());
+      if (this._ownsStream) {
+        this.stream.getTracks().forEach(t => t.stop());
+      }
       this.stream = null;
+      this._ownsStream = false;
     }
-    // Don't close audioContext - it's shared across measurements
+    if (this._ownsContext && this.audioContext) {
+      this.audioContext.close().catch(() => {});
+      this._ownsContext = false;
+    }
     this.analyserNode = null;
+    this._workletLoaded = false;
+    this._workletFailed = false;
+    this._measuring = false;
   }
 
   stopMicOnly() {
-    // Stop just the microphone tracks without destroying the analyzer
+    // Stop just the microphone tracks without destroying the analyzer — only if we own them
     if (this.stream) {
-      this.stream.getTracks().forEach(t => {
-        if (t.kind === 'audio') {
-          t.stop();
-          if (import.meta.env.DEV) console.log("Mic track stopped");
-        }
-      });
+      if (this._ownsStream) {
+        this.stream.getTracks().forEach(t => {
+          if (t.kind === 'audio') {
+            t.stop();
+            if (import.meta.env.DEV) console.log("Mic track stopped");
+          }
+        });
+      }
       this.stream = null;
+      this._ownsStream = false;
     }
+    if (this.sourceNode) {
+      this.sourceNode.disconnect();
+      this.sourceNode = null;
+    }
+    this._measuring = false;
   }
 }
