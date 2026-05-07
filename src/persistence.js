@@ -1,13 +1,32 @@
 /**
  * Persistence — save/load calibration profiles to localStorage.
  *
- * Profile shape: { gains: Float32Array|null, timestamp: number, type: 'pink-noise'|'sweep' }
+ * Profile shape: { gains: Float32Array|null, timestamp: number, type: 'pink-noise'|'sweep', bands?: ParametricBand[] }
  *
  * Float32Array is converted to a plain Array for JSON serialization.
+ * ParametricBand[] is serialized as a plain array of {freq, gain, Q} objects.
  */
 
 const STORAGE_KEY = 'lazyEq_calibration';
 const STORAGE_KEY_PREV = 'lazyEq_calibration_prev';
+
+/**
+ * Convert Float32Array to plain array for JSON serialization.
+ * @param {Float32Array} float32Array
+ * @returns {number[]}
+ */
+export function float32ToArray(float32Array) {
+  return Array.from(float32Array);
+}
+
+/**
+ * Convert plain array back to Float32Array.
+ * @param {number[]} arr
+ * @returns {Float32Array}
+ */
+export function arrayToFloat32(arr) {
+  return new Float32Array(arr);
+}
 
 /**
  * Check if all 8 ISO bands are saturated at ±4dB limits.
@@ -29,7 +48,7 @@ export function isProfileSaturated(gains) {
  * If the new profile is saturated (all bands at ±4dB) and a previous exists,
  * auto-rollback: restore previous → current.
  *
- * @param {{gains: Float32Array|null, timestamp: number, type: string}} profile
+ * @param {{gains: Float32Array|null, timestamp: number, type: string, bands?: {freq: number, gain: number, Q: number}[]}} profile
  * @returns {{rolledBack: boolean}}
  */
 export function saveProfile(profile) {
@@ -37,6 +56,7 @@ export function saveProfile(profile) {
     gains: profile.gains ? Array.from(profile.gains) : null,
     timestamp: profile.timestamp,
     type: profile.type,
+    bands: profile.bands || undefined,
   };
 
   // Move current → previous
@@ -59,7 +79,7 @@ export function saveProfile(profile) {
 
 /**
  * Load a calibration profile from localStorage (current slot).
- * @returns {{gains: Float32Array|null, timestamp: number, type: string}|null}
+ * @returns {{gains: Float32Array|null, timestamp: number, type: string, bands?: {freq: number, gain: number, Q: number}[]}|null}
  */
 export function loadProfile() {
   return _loadFromKey(STORAGE_KEY);
@@ -67,7 +87,7 @@ export function loadProfile() {
 
 /**
  * Load the previous calibration profile from localStorage.
- * @returns {{gains: Float32Array|null, timestamp: number, type: string}|null}
+ * @returns {{gains: Float32Array|null, timestamp: number, type: string, bands?: {freq: number, gain: number, Q: number}[]}|null}
  */
 export function loadPreviousProfile() {
   return _loadFromKey(STORAGE_KEY_PREV);
@@ -76,7 +96,7 @@ export function loadPreviousProfile() {
 /**
  * Internal helper: load and parse a profile from a given storage key.
  * @param {string} key
- * @returns {{gains: Float32Array|null, timestamp: number, type: string}|null}
+ * @returns {{gains: Float32Array|null, timestamp: number, type: string, bands?: {freq: number, gain: number, Q: number}[]}|null}
  */
 function _loadFromKey(key) {
   try {
@@ -96,7 +116,10 @@ function _loadFromKey(key) {
       ? new Float32Array(parsed.gains)
       : null;
 
-    return { gains, timestamp: parsed.timestamp, type: parsed.type };
+    // Reconstruct bands if present (optional field)
+    const bands = Array.isArray(parsed.bands) ? parsed.bands : undefined;
+
+    return { gains, timestamp: parsed.timestamp, type: parsed.type, bands };
   } catch {
     // Corrupt or unreadable data
     return null;

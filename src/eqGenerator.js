@@ -86,7 +86,8 @@ export function generateEQCurve(spectrum, frequencyLabels, targetGain = 0) {
 export function exportWavelet(gains) {
   const parts = [];
   const numBands = WAVELET_FREQUENCIES.length;
-  const gainsArray = (gains && gains.length > 0) ? gains : [];
+  // Normalize to plain Array — Float32Array serialized via JSON.parse loses .length
+  const gainsArray = (gains && gains.length > 0) ? Array.from(gains) : [];
   for (let i = 0; i < numBands; i++) {
     let gain = 0;
     if (gainsArray.length >= numBands) {
@@ -106,7 +107,8 @@ export function exportWavelet(gains) {
 
 export function exportEqMac(gains, visData = null) {
   const bands = EQMAC_BANDS;
-  const gainsArray = (gains && gains.length > 0) ? gains : [];
+  // Normalize to plain Array — Float32Array serialized via JSON.parse loses .length
+  const gainsArray = (gains && gains.length > 0) ? Array.from(gains) : [];
 
   if (gainsArray.length === 0) {
     return JSON.stringify({
