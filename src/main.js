@@ -5,9 +5,6 @@
 
 import { SineSweepSource } from "./sineSweep.js";
 import { SpectrumAnalyzer } from "./analyzer.js";
-import { RemoteMicHost } from "./webrtc/remoteMicHost.js";
-import { generateQRDataUrl } from "./webrtc/qrCode.js";
-import { resolveSignalingUrl, isPrivateOrLocalHostname } from "./webrtc/networkDiscovery.js";
 import { SAMPLE_RATE, FFT_SIZE } from "./constants.js";
 import {
   exportWavelet,
@@ -65,8 +62,6 @@ let frameCount = 0;
 let accumulatedSpectrum = null;
 let sweepDuration = 8;
 let selectedMicDeviceId = null;
-let remoteMicHost = null;
-let isRemoteMicActive = false;
 let sweepProcessing = false;
 let sweepProcessTimeout = null;
 let legacyAnimationFrame = null; // Track legacy sweep animation frame for cleanup
@@ -129,6 +124,12 @@ const statusCalibration = document.getElementById("status-calibration");
 const calibrationDelta = document.getElementById("calibration-delta");
 const resultsSection = document.getElementById("results-section");
 
+// Legacy sweep fallback mapping (current UI uses calibration ids)
+const legacyStatusFallback = statusCalibration;
+const statusNoiseEl = document.getElementById("status-noise") || legacyStatusFallback;
+const statusSweepEl = document.getElementById("status-sweep") || legacyStatusFallback;
+const sweepCountSelectEl = document.getElementById("sweep-count") || document.getElementById("sweep-count-advanced");
+
 // Progress bar elements
 const noiseProgressContainer = document.getElementById("noise-progress-container");
 const noiseProgressBar = document.getElementById("noise-progress-bar");
@@ -141,19 +142,6 @@ const calStep2 = document.getElementById("cal-step-2");
 const calStep3 = document.getElementById("cal-step-3");
 const calConn1 = document.getElementById("cal-conn-1");
 const calConn2 = document.getElementById("cal-conn-2");
-
-// Remote Mic DOM Elements
-const btnRemoteMic = document.getElementById("btn-remote-mic");
-const remoteMicStatus = document.getElementById("remote-mic-status");
-const remoteMicCodePanel = document.getElementById("remote-mic-code");
-const remoteMicUrl = document.getElementById("remote-mic-url");
-const remoteMicQr = document.getElementById("remote-mic-qr");
-const remoteCodeDigits = document.getElementById("remote-code-digits");
-const remoteMicServerInput = document.getElementById("remote-mic-server");
-const remoteMicPublicUrlInput = document.getElementById("remote-mic-public-url");
-const remoteMicServerHint = document.getElementById("remote-mic-server-hint");
-const remoteMicConnectedBadge = document.getElementById("remote-mic-connected");
-const sweepInstructions = document.getElementById("sweep-instructions");
 
 // Legacy sweep (Advanced section) DOM elements
 const btnLegacySweep = document.getElementById("btn-legacy-sweep");
@@ -231,90 +219,6 @@ function hideProgressBar(type) {
   if (container) container.classList.add("hidden");
   if (bar) bar.style.width = "0%";
 }
-
-// ─── Remote Mic Server URL Detection ───────────────────────────────
-
-let detectedSignalingUrl = null;
-
-async function initSignalingDetection() {
-  const hostname = window.location.hostname;
-
-  if (isPrivateOrLocalHostname(hostname)) {
-    // Local network — use Vite's /signaling proxy when HTTPS, direct ws:// when HTTP
-    if (window.location.protocol === "https:") {
-      // HTTPS: use Vite WebSocket proxy (avoids certificate issues on port 3001)
-      detectedSignalingUrl = `${window.location.origin.replace(/^https/, 'wss')}/signaling`;
-      if (remoteMicServerInput) {
-        remoteMicServerInput.value = detectedSignalingUrl;
-      }
-      if (remoteMicServerHint) {
-        remoteMicServerHint.textContent = "Auto-detected: using Vite /signaling proxy (HTTPS).";
-      }
-    } else {
-      // HTTP: direct ws:// connection
-      detectedSignalingUrl = `ws://${hostname}:3001`;
-      if (remoteMicServerInput) {
-        remoteMicServerInput.value = detectedSignalingUrl;
-      }
-      if (remoteMicServerHint) {
-        remoteMicServerHint.textContent = "Auto-detected LAN address. Use Firefox on the phone (Chrome blocks mic on HTTP).";
-      }
-    }
-    return;
-  }
-
-  // Tunnel mode (HTTPS with public domain like ngrok, loca.lt, etc.)
-  // Use Vite's proxy: WebSocket is served from the same origin at /signaling
-  if (window.location.protocol === 'https:') {
-    const tunnelUrl = `${window.location.origin.replace(/^http/, 'ws')}/signaling`;
-    detectedSignalingUrl = tunnelUrl;
-    if (remoteMicServerInput) {
-      remoteMicServerInput.value = tunnelUrl;
-    }
-    if (remoteMicServerHint) {
-      remoteMicServerHint.textContent = "Tunnel mode: using /signaling proxy. Only 1 tunnel needed.";
-    }
-    if (remoteMicPublicUrlInput && !remoteMicPublicUrlInput.value) {
-      remoteMicPublicUrlInput.value = window.location.origin;
-    }
-    if (import.meta.env.DEV) console.log("[RemoteMic] Tunnel mode detected. Signaling URL:", tunnelUrl);
-    return;
-  }
-
-  // Public tunnel — try WebRTC IP discovery automatically
-  if (remoteMicServerHint) {
-    remoteMicServerHint.textContent = "Detecting local IP via WebRTC...";
-  }
-
-  try {
-    const url = await resolveSignalingUrl(hostname);
-    if (url) {
-      detectedSignalingUrl = url;
-      if (remoteMicServerInput) {
-        remoteMicServerInput.value = url;
-      }
-      if (remoteMicServerHint) {
-        remoteMicServerHint.textContent = "Auto-detected via WebRTC. Both devices must be on the same Wi-Fi.";
-      }
-      if (import.meta.env.DEV) console.log("[RemoteMic] Auto-discovered signaling URL:", url);
-      return;
-    }
-  } catch (e) {
-    if (import.meta.env.DEV) console.warn("[RemoteMic] Auto-discovery failed:", e);
-  }
-
-  // Fallback: manual input required
-  if (remoteMicServerInput) {
-    remoteMicServerInput.value = "";
-    remoteMicServerInput.placeholder = "ws://192.168.1.42:3001";
-  }
-  if (remoteMicServerHint) {
-    remoteMicServerHint.innerHTML = `<span style="color:#fc5c5c">Could not auto-detect.</span> Enter your PC's local Wi-Fi IP (run <code>ipconfig</code> or <code>ifconfig</code>) with port 3001.`;
-  }
-}
-
-// Kick off detection immediately (does not block app init)
-initSignalingDetection();
 
 // ─────────────────────────────────────────────────────────────────────
 
@@ -416,215 +320,11 @@ micSelect.addEventListener("change", () => {
 // ─── Remote Mic Integration ──────────────────────────────────────────
 
 async function initAnalyzer(ctx) {
-  const hasRemote = !!(remoteMicHost && remoteMicHost.remoteStream);
-  if (import.meta.env.DEV) {
-    console.log("[initAnalyzer] isRemoteMicActive:", isRemoteMicActive);
-    console.log("[initAnalyzer] remoteMicHost exists:", !!remoteMicHost);
-    console.log("[initAnalyzer] remoteStream exists:", !!(remoteMicHost && remoteMicHost.remoteStream));
-    console.log("[initAnalyzer] AudioContext state:", ctx?.state);
-    if (hasRemote) {
-      const track = remoteMicHost.remoteStream.getAudioTracks()[0];
-      console.log("[initAnalyzer] Remote track state:", {
-        enabled: track?.enabled,
-        muted: track?.muted,
-        readyState: track?.readyState
-      });
-    }
-  }
-  if (hasRemote) {
-    await analyzer.init(remoteMicHost.remoteStream, ctx);
-    if (import.meta.env.DEV) console.log("[Analyzer] Using REMOTE stream:", remoteMicHost.remoteStream.id);
-  } else {
-    await analyzer.init(selectedMicDeviceId, ctx);
-    if (import.meta.env.DEV) console.log("[Analyzer] Using LOCAL mic:", selectedMicDeviceId);
-    // Permission granted — refresh device list to get proper labels
-    await loadDevices();
-  }
+  await analyzer.init(selectedMicDeviceId, ctx);
+  if (import.meta.env.DEV) console.log("[Analyzer] Using LOCAL mic:", selectedMicDeviceId);
+  // Permission granted — refresh device list to get proper labels
+  await loadDevices();
 }
-
-function disconnectRemoteMic() {
-  if (remoteMicHost) {
-    remoteMicHost.disconnect();
-    remoteMicHost = null;
-  }
-  isRemoteMicActive = false;
-  if (btnRemoteMic) {
-    btnRemoteMic.textContent = "📱 Use Remote Mic";
-    btnRemoteMic.disabled = false;
-  }
-  if (remoteMicStatus) {
-    remoteMicStatus.textContent = "";
-    remoteMicStatus.className = "status";
-  }
-  if (remoteMicCodePanel) remoteMicCodePanel.classList.add("hidden");
-  if (remoteMicQr) {
-    remoteMicQr.src = "";
-    remoteMicQr.style.display = "block";
-  }
-  if (remoteMicConnectedBadge) remoteMicConnectedBadge.classList.add("hidden");
-  if (micSelect) micSelect.disabled = false;
-  if (sweepInstructions) {
-    sweepInstructions.textContent = "Connect your speaker via Bluetooth. We'll play a sweep (20Hz–20kHz) and capture the response.";
-  }
-}
-
-if (btnRemoteMic) {
-  btnRemoteMic.addEventListener("click", async () => {
-    if (isRemoteMicActive) {
-      disconnectRemoteMic();
-      return;
-    }
-
-    try {
-      btnRemoteMic.disabled = true;
-      remoteMicStatus.textContent = "Starting remote mic server...";
-      remoteMicStatus.className = "status";
-
-      // Determine signaling URL from input or auto-detect
-      let signalingUrl = remoteMicServerInput?.value?.trim();
-      if (!signalingUrl) {
-        if (!detectedSignalingUrl) {
-          remoteMicStatus.textContent = "Please enter your PC's local Wi-Fi IP in the Signaling Server field above.";
-          remoteMicStatus.className = "status danger";
-          btnRemoteMic.disabled = false;
-          return;
-        }
-        signalingUrl = detectedSignalingUrl;
-      }
-
-      // Determine the URL the phone will use to open remote-mic.html.
-      // Priority: 1) manual public URL input, 2) current HTTPS origin (ngrok/tunnel), 3) local IP
-      let publicBaseUrl = remoteMicPublicUrlInput?.value?.trim();
-      if (!publicBaseUrl) {
-        if (window.location.protocol === 'https:') {
-          publicBaseUrl = window.location.origin;
-        } else {
-          try {
-            const sigUrl = new URL(signalingUrl.replace(/^ws/, "http"));
-            publicBaseUrl = `http://${sigUrl.hostname}:${window.location.port}`;
-          } catch {
-            publicBaseUrl = window.location.origin;
-          }
-        }
-      }
-
-      // Build the remote-mic page URL with signaling server as query param
-      const remoteMicPageUrl = `${publicBaseUrl}/remote-mic.html?sig=${encodeURIComponent(signalingUrl)}`;
-
-      remoteMicHost = new RemoteMicHost({ signalingUrl });
-
-      // Safety timeout: if room is not created within 10s, show manual fallback
-      const roomTimeout = setTimeout(() => {
-        if (!remoteMicHost?.roomCode) {
-          remoteMicStatus.innerHTML = `<span style="color:#fc5c5c">Connection to signaling server failed.</span><br>LocalTunnel may not support WebSockets.<br><br>Manual setup:<br>1. Open this URL on your phone:<br><code style="color:#00f5d4">${remoteMicPageUrl}</code><br>2. Enter code: <strong>${remoteCodeDigits.textContent || '----'}</strong>`;
-          remoteMicStatus.className = "status danger";
-          btnRemoteMic.disabled = false;
-        }
-      }, 10000);
-
-      remoteMicHost.onRoomCreated = async (code) => {
-        clearTimeout(roomTimeout);
-        remoteMicStatus.textContent = `Remote mic ready — code: ${code}`;
-        remoteMicStatus.className = "status done";
-        if (remoteMicCodePanel) {
-          remoteMicCodePanel.classList.remove("hidden");
-          remoteMicUrl.textContent = remoteMicPageUrl;
-          remoteCodeDigits.textContent = code;
-          if (remoteMicQr) {
-            try {
-              remoteMicQr.src = await generateQRDataUrl(remoteMicPageUrl, 200);
-            } catch (e) {
-              console.warn("QR generation failed:", e);
-              remoteMicQr.style.display = "none";
-            }
-          }
-        }
-        btnRemoteMic.textContent = "❌ Disconnect Remote Mic";
-        btnRemoteMic.disabled = false;
-      };
-
-      remoteMicHost.onRemoteStream = (stream) => {
-        isRemoteMicActive = true;
-        remoteMicStatus.textContent = "Remote mic connected! Stream active.";
-        remoteMicStatus.className = "status done";
-        if (micSelect) micSelect.disabled = true;
-        if (remoteMicConnectedBadge) remoteMicConnectedBadge.classList.remove("hidden");
-
-        // Diagnostic: play remote stream directly to verify audio is flowing
-        if (import.meta.env.DEV) {
-          const track = stream.getAudioTracks()[0];
-          console.log("[DIAG] Remote stream audio track:", {
-            id: track?.id,
-            enabled: track?.enabled,
-            muted: track?.muted,
-            readyState: track?.readyState,
-            label: track?.label
-          });
-
-          // Play the remote stream through PC speakers to verify audio
-          const audioEl = new Audio();
-          audioEl.srcObject = stream;
-          audioEl.muted = false;
-          audioEl.volume = 0.5;
-          audioEl.play().then(() => {
-            console.log("[DIAG] Remote stream playback started - you should hear phone mic through PC speakers");
-          }).catch(err => {
-            console.warn("[DIAG] Remote stream playback failed:", err);
-          });
-        }
-      };
-
-      remoteMicHost.onClientConnected = () => {
-        isRemoteMicActive = true;
-        if (micSelect) micSelect.disabled = true;
-        if (remoteMicConnectedBadge) remoteMicConnectedBadge.classList.remove("hidden");
-        if (remoteMicStatus) {
-          remoteMicStatus.textContent = "Remote mic active! Ready to measure.";
-          remoteMicStatus.className = "status done";
-        }
-        if (sweepInstructions) {
-          sweepInstructions.innerHTML = "Remote microphone is active. <strong>The PC will play the sweep through your speakers</strong> and the phone will capture the room's response.";
-        }
-      };
-
-      remoteMicHost.onClientDisconnected = () => {
-        if (remoteMicStatus) {
-          remoteMicStatus.textContent = "Remote mic disconnected.";
-          remoteMicStatus.className = "status";
-        }
-        isRemoteMicActive = false;
-        if (micSelect) micSelect.disabled = false;
-        if (remoteMicConnectedBadge) remoteMicConnectedBadge.classList.add("hidden");
-        if (sweepInstructions) {
-          sweepInstructions.textContent = "Connect your speaker via Bluetooth. We'll play a sweep (20Hz–20kHz) and capture the response.";
-        }
-      };
-
-      remoteMicHost.onError = (msg) => {
-        remoteMicStatus.textContent = "Remote mic error: " + msg;
-        remoteMicStatus.className = "status danger";
-        btnRemoteMic.disabled = false;
-        isRemoteMicActive = false;
-        micSelect.disabled = false;
-      };
-
-      remoteMicHost.onStatus = (msg) => {
-        remoteMicStatus.textContent = msg;
-        if (import.meta.env.DEV) console.log("[RemoteMic]", msg);
-      };
-
-      await remoteMicHost.start();
-    } catch (err) {
-      console.error("Remote mic error:", err);
-      remoteMicStatus.textContent = "Failed to start remote mic: " + err.message;
-      remoteMicStatus.className = "status danger";
-      btnRemoteMic.disabled = false;
-      isRemoteMicActive = false;
-    }
-  });
-}
-
-// ─── End Remote Mic Integration ──────────────────────────────────────
 
 function renderSpectrum(ctx, data, color) {
   const width = ctx.canvas.width / window.devicePixelRatio;
@@ -876,18 +576,6 @@ function renderLiveSweep() {
   ctx.font = "9px 'JetBrains Mono', monospace";
   ctx.fillText(`${frameCount} frames`, 8, 16);
 
-  // Source indicator: show if remote mic is active
-  if (isRemoteMicActive) {
-    ctx.fillStyle = "rgba(0, 245, 212, 0.15)";
-    ctx.fillRect(width - 78, 4, 74, 18);
-    ctx.strokeStyle = "rgba(0, 245, 212, 0.5)";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(width - 78, 4, 74, 18);
-    ctx.fillStyle = "#00f5d4";
-    ctx.font = "bold 9px 'JetBrains Mono', monospace";
-    ctx.fillText("REMOTE MIC", width - 74, 16);
-  }
-
   animationFrame = requestAnimationFrame(renderLiveSweep);
 }
 
@@ -1032,8 +720,12 @@ function resizeCanvases() {
     const rect = canvas.getBoundingClientRect();
     const cssW = Math.max(1, Math.round(rect.width));
     const cssH = Math.max(1, Math.round(rect.height));
-    canvas.width = Math.floor(cssW * dpr);
-    canvas.height = Math.floor(cssH * dpr);
+    const nextW = Math.floor(cssW * dpr);
+    const nextH = Math.floor(cssH * dpr);
+    // Avoid clearing canvas when size didn't change
+    if (canvas.width === nextW && canvas.height === nextH) return;
+    canvas.width = nextW;
+    canvas.height = nextH;
     const ctx = canvas.getContext("2d");
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
@@ -1055,27 +747,6 @@ btnNoise.addEventListener("click", async () => {
       await loadDevices();
     }
 
-    // If remote mic mode is active but stream hasn't arrived yet, wait for it
-    if (remoteMicHost && !remoteMicHost.remoteStream) {
-      statusNoise.textContent = "Waiting for remote mic to connect...";
-      statusNoise.className = "status";
-      btnNoise.disabled = true;
-
-      // Wait up to 15 seconds for the remote stream
-      let waited = 0;
-      while (!remoteMicHost.remoteStream && waited < 15000) {
-        await new Promise(r => setTimeout(r, 500));
-        waited += 500;
-      }
-
-      if (!remoteMicHost.remoteStream) {
-        statusNoise.textContent = "Remote mic did not connect in time. Check the phone and try again.";
-        statusNoise.className = "status danger";
-        btnNoise.disabled = false;
-        return;
-      }
-    }
-
     noiseCalibrationInProgress = true;
 
     // ── Local mic: obtain stream ONCE and reuse it ──
@@ -1083,47 +754,38 @@ btnNoise.addEventListener("click", async () => {
     // ephemeral-deviceId issue where IDs from enumerateDevices() before
     // permission is granted become invalid after getUserMedia() is called.
     let localMicStream = null;
-    if (!isRemoteMicActive) {
-      // Check if mic permission was previously blocked (Chrome remembers)
-      try {
-        if (navigator.permissions) {
-          const micPerm = await navigator.permissions.query({ name: "microphone" });
-          if (micPerm.state === "denied") {
-            statusNoise.textContent = "Microphone access was previously blocked for this site. Click the camera/lock icon in the address bar and change it to 'Allow', then try again.";
-            statusNoise.className = "status danger";
-            noiseCalibrationInProgress = false;
-            return;
-          }
+    // Check if mic permission was previously blocked (Chrome remembers)
+    try {
+      if (navigator.permissions) {
+        const micPerm = await navigator.permissions.query({ name: "microphone" });
+        if (micPerm.state === "denied") {
+          statusNoiseEl.textContent = "Microphone access was previously blocked for this site. Click the camera/lock icon in the address bar and change it to 'Allow', then try again.";
+          statusNoiseEl.className = "status danger";
+          noiseCalibrationInProgress = false;
+          return;
         }
-      } catch (_) { /* Permissions API not available or query failed */ }
-
-      try {
-        localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Re-enumerate now that we have permission — gets real device labels
-        await loadDevices();
-      } catch (permErr) {
-        throw permErr;
       }
+    } catch (_) { /* Permissions API not available or query failed */ }
+
+    try {
+      localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Re-enumerate now that we have permission — gets real device labels
+      await loadDevices();
+    } catch (permErr) {
+      throw permErr;
     }
 
-    const remoteLabelNoise = isRemoteMicActive ? " [Remote Mic]" : "";
-    statusNoise.textContent = "Step 1 of 3: Please stay quiet for 5 seconds to measure room noise floor..." + remoteLabelNoise;
-    statusNoise.className = "status";
+    statusNoiseEl.textContent = "Step 1 of 3: Please stay quiet for 5 seconds to measure room noise floor...";
+    statusNoiseEl.className = "status";
     btnNoise.disabled = true;
     updateStepIndicator(1, "active");
 
     const ctx = await ensureAudioContext();
     analyzer = new SpectrumAnalyzer();
+    await analyzer.init(localMicStream, ctx);
 
-    if (isRemoteMicActive) {
-      await initAnalyzer(ctx);
-    } else if (localMicStream) {
-      // Pass the pre-obtained stream directly — no second getUserMedia call
-      await analyzer.init(localMicStream, ctx);
-    }
-
-    statusNoise.textContent = "Recording noise floor... keep quiet";
-    statusNoise.className = "status recording";
+    statusNoiseEl.textContent = "Recording noise floor... keep quiet";
+    statusNoiseEl.className = "status recording";
     hideProgressBar("noise");
 
     const startTime = Date.now();
@@ -1136,7 +798,7 @@ btnNoise.addEventListener("click", async () => {
 
       if (analyzer && analyzer.getRMSLevel) {
         const db = analyzer.getRMSLevel();
-        statusNoise.textContent = `Recording noise floor... ${db.toFixed(0)} dB — keep quiet`;
+        statusNoiseEl.textContent = `Recording noise floor... ${db.toFixed(0)} dB — keep quiet`;
       }
       if (Date.now() - startTime < captureDuration) {
         setTimeout(updateNoiseDisplay, 100);
@@ -1147,7 +809,7 @@ btnNoise.addEventListener("click", async () => {
 await analyzer.captureNoiseFloor(5);
 
   // Self-calibrate microphone using phone speaker (invisible to user)
-  statusNoise.textContent = "Calibrating mic response...";
+  statusNoiseEl.textContent = "Calibrating mic response...";
   await analyzer.calibrateMicrophone();
 
   if (analyzer.noiseBuffer) {
@@ -1159,14 +821,14 @@ await analyzer.captureNoiseFloor(5);
         }
       }
       if (minDB === Infinity) {
-        statusNoise.textContent = "Step 1 complete: Noise floor captured (silent environment)";
+        statusNoiseEl.textContent = "Step 1 complete: Noise floor captured (silent environment)";
       } else {
-        statusNoise.textContent = `Step 1 complete: Noise floor measured (${minDB.toFixed(0)} to ${maxDB.toFixed(0)} dB)`;
+        statusNoiseEl.textContent = `Step 1 complete: Noise floor measured (${minDB.toFixed(0)} to ${maxDB.toFixed(0)} dB)`;
       }
     } else {
-      statusNoise.textContent = "Step 1 complete: Noise floor captured";
+      statusNoiseEl.textContent = "Step 1 complete: Noise floor captured";
     }
-    statusNoise.className = "status done";
+    statusNoiseEl.className = "status done";
     hideProgressBar("noise");
     updateStepIndicator(1, "completed");
     updateStepIndicator(2, "active");
@@ -1175,11 +837,11 @@ await analyzer.captureNoiseFloor(5);
   } catch (err) {
     console.error(err);
     if (err.name === "NotAllowedError" || err.message?.includes("permission")) {
-      statusNoise.textContent = "Microphone access was blocked. Check your browser's address bar for the blocked-permissions icon, allow mic access, and try again.";
+      statusNoiseEl.textContent = "Microphone access was blocked. Check your browser's address bar for the blocked-permissions icon, allow mic access, and try again.";
     } else {
-      statusNoise.textContent = "Noise floor calibration failed. Make sure your mic is working and try again.";
+      statusNoiseEl.textContent = "Noise floor calibration failed. Make sure your mic is working and try again.";
     }
-    statusNoise.className = "status danger";
+    statusNoiseEl.className = "status danger";
     hideProgressBar("noise");
     updateStepIndicator(1, "pending");
     btnNoise.disabled = false;
@@ -1294,39 +956,19 @@ function computeSpectrumFromPCM(pcm, sampleRate, targetBins) {
 if (btnSweep) {
 btnSweep.addEventListener("click", async () => {
   try {
-    // If remote mic mode is active but stream hasn't arrived yet, wait for it
-    if (remoteMicHost && !remoteMicHost.remoteStream) {
-      statusSweep.textContent = "Waiting for remote mic to connect...";
-      statusSweep.className = "status";
-      btnSweep.disabled = true;
-
-      let waited = 0;
-      while (!remoteMicHost.remoteStream && waited < 15000) {
-        await new Promise(r => setTimeout(r, 500));
-        waited += 500;
-      }
-
-      if (!remoteMicHost.remoteStream) {
-        statusSweep.textContent = "Remote mic did not connect in time. Check the phone and try again.";
-        statusSweep.className = "status danger";
-        btnSweep.disabled = false;
-        return;
-      }
-    }
 
     // Check noise floor was calibrated
     if (!analyzer || !analyzer.noiseBuffer) {
-      statusSweep.textContent = "Please complete Step 1 (Noise Floor) before running the sweep.";
-      statusSweep.className = "status danger";
+      statusSweepEl.textContent = "Please complete Step 1 (Noise Floor) before running the sweep.";
+      statusSweepEl.className = "status danger";
       btnSweep.disabled = false;
       btnStop.disabled = true;
       return;
     }
 
     // Read sweep count
-    const sweepCount = parseInt(sweepCountSelect?.value || "1");
+    const sweepCount = parseInt(sweepCountSelectEl?.value || "1");
 
-    const remoteLabel = isRemoteMicActive ? " [Remote Mic]" : "";
     btnSweep.disabled = true;
     btnStop.disabled = false;
     hideProgressBar("sweep");
@@ -1339,8 +981,8 @@ btnSweep.addEventListener("click", async () => {
 
     if (sweepCount === 1) {
       // ── Single sweep (original behavior) ──
-      statusSweep.textContent = "Step 2 of 3: Playing 8-second sweep test tone through your speakers..." + remoteLabel;
-      statusSweep.className = "status recording";
+      statusSweepEl.textContent = "Step 2 of 3: Playing 8-second sweep test tone through your speakers...";
+      statusSweepEl.className = "status recording";
 
       sweepSource = new SineSweepSource(ctx);
       sweepSource.createBuffer(sweepDuration);
@@ -1363,15 +1005,15 @@ btnSweep.addEventListener("click", async () => {
 
         if (analyzer && analyzer.getRMSLevel) {
           const db = analyzer.getRMSLevel();
-          statusSweep.textContent = `Recording sweep response... ${db.toFixed(0)} dB`;
+          statusSweepEl.textContent = `Recording sweep response... ${db.toFixed(0)} dB`;
         }
       }, 200);
 
       sweepSource.onComplete = async () => {
         clearInterval(sweepUpdateInterval);
         setProgressBar("sweep", 100);
-        statusSweep.textContent = "Sweep finished — processing frequency response...";
-        statusSweep.className = "status info";
+        statusSweepEl.textContent = "Sweep finished — processing frequency response...";
+        statusSweepEl.className = "status info";
         btnStop.disabled = true;
 
         sweepProcessTimeout = setTimeout(async () => {
@@ -1410,21 +1052,10 @@ btnSweep.addEventListener("click", async () => {
       sweepSource.start();
       renderLiveSweep();
 
-      if (import.meta.env.DEV && isRemoteMicActive) {
-        const checkRMS = () => {
-          if (analyzer) {
-            const rms = analyzer.getRMSLevel();
-            console.log("[DIAG] Remote mic RMS level:", rms.toFixed(1), "dB");
-          }
-        };
-        checkRMS();
-        const rmsInterval = setInterval(checkRMS, 2000);
-        setTimeout(() => clearInterval(rmsInterval), sweepDuration * 1000 + 2000);
-      }
     } else {
       // ── Multi-sweep averaging ──
-      statusSweep.textContent = `Step 2 of 3: Running ${sweepCount} sweeps for averaging...` + remoteLabel;
-      statusSweep.className = "status recording";
+      statusSweepEl.textContent = `Step 2 of 3: Running ${sweepCount} sweeps for averaging...`;
+      statusSweepEl.className = "status recording";
 
       const allSpectra = [];
 
@@ -1433,7 +1064,7 @@ btnSweep.addEventListener("click", async () => {
         accumulatedSpectrum = null;
         frameCount = 0;
 
-        statusSweep.textContent = `Sweep ${sweepNum + 1} of ${sweepCount}...`;
+        statusSweepEl.textContent = `Sweep ${sweepNum + 1} of ${sweepCount}...`;
         const sweepProgress = ((sweepNum) / sweepCount) * 100;
         setProgressBar("sweep", sweepProgress);
 
@@ -1450,7 +1081,7 @@ btnSweep.addEventListener("click", async () => {
 
             if (analyzer && analyzer.getRMSLevel) {
               const db = analyzer.getRMSLevel();
-              statusSweep.textContent = `Sweep ${sweepNum + 1} of ${sweepCount}... ${db.toFixed(0)} dB`;
+              statusSweepEl.textContent = `Sweep ${sweepNum + 1} of ${sweepCount}... ${db.toFixed(0)} dB`;
             }
           }, 200);
 
@@ -1489,15 +1120,15 @@ btnSweep.addEventListener("click", async () => {
 
         // Brief pause between sweeps
         if (sweepNum < sweepCount - 1) {
-          statusSweep.textContent = `Pause before sweep ${sweepNum + 2}...`;
+          statusSweepEl.textContent = `Pause before sweep ${sweepNum + 2}...`;
           await new Promise(r => setTimeout(r, 500));
         }
       }
 
       // All sweeps done — average the compensated spectra
       setProgressBar("sweep", 100);
-      statusSweep.textContent = `Averaging ${sweepCount} sweeps...`;
-      statusSweep.className = "status info";
+      statusSweepEl.textContent = `Averaging ${sweepCount} sweeps...`;
+      statusSweepEl.className = "status info";
       btnStop.disabled = true;
 
       // Average in the compensated domain (after 1/f compensation, before noise subtraction)
@@ -1527,8 +1158,8 @@ btnSweep.addEventListener("click", async () => {
     }
   } catch (err) {
     console.error(err);
-    statusSweep.textContent = "Sweep failed: " + err.message + ". Try again or re-calibrate the noise floor first.";
-    statusSweep.className = "status danger";
+    statusSweepEl.textContent = "Sweep failed: " + err.message + ". Try again or re-calibrate the noise floor first.";
+    statusSweepEl.className = "status danger";
     hideProgressBar("sweep");
     btnSweep.disabled = false;
   }
@@ -1543,8 +1174,8 @@ btnStop.addEventListener("click", async () => {
     animationFrame = null;
   }
 
-  statusSweep.textContent = "Processing sweep response...";
-  statusSweep.className = "status info";
+  statusSweepEl.textContent = "Processing sweep response...";
+  statusSweepEl.className = "status info";
   btnStop.disabled = true;
   hideProgressBar("sweep");
 
@@ -1561,8 +1192,8 @@ btnStop.addEventListener("click", async () => {
     await processSweepResults();
   } catch (err) {
     console.error(err);
-    statusSweep.textContent = "Processing failed: " + err.message + ". Try playing the sweep again.";
-    statusSweep.className = "status danger";
+    statusSweepEl.textContent = "Processing failed: " + err.message + ". Try playing the sweep again.";
+    statusSweepEl.className = "status danger";
     hideProgressBar("sweep");
     btnSweep.disabled = false;
   }
@@ -3026,6 +2657,17 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", resizeCanvases);
 }
 
+// Keep canvases in sync with layout changes (not only viewport resize)
+if (window.ResizeObserver) {
+  const resizeObserver = new ResizeObserver(() => {
+    resizeCanvases();
+  });
+  const calibrationCardEl = document.getElementById("calibration-card");
+  if (calibrationCardEl) resizeObserver.observe(calibrationCardEl);
+  if (resultsSection) resizeObserver.observe(resultsSection);
+  if (canvasLive) resizeObserver.observe(canvasLive);
+}
+
 // ─── Live Calibration Event Wiring ────────────────────────────────────
 
 if (btnCalibrate) {
@@ -3054,25 +2696,6 @@ if (btnLegacySweep) {
         await loadDevices();
       }
 
-      // If remote mic mode is active but stream hasn't arrived yet, wait for it
-      if (remoteMicHost && !remoteMicHost.remoteStream) {
-        statusLegacySweep.textContent = "Waiting for remote mic to connect...";
-        statusLegacySweep.className = "status";
-        btnLegacySweep.disabled = true;
-
-        let waited = 0;
-        while (!remoteMicHost.remoteStream && waited < 15000) {
-          await new Promise(r => setTimeout(r, 500));
-          waited += 500;
-        }
-
-        if (!remoteMicHost.remoteStream) {
-          statusLegacySweep.textContent = "Remote mic did not connect in time.";
-          statusLegacySweep.className = "status danger";
-          btnLegacySweep.disabled = false;
-          return;
-        }
-      }
 
       const ctx = initAudioContext();
       if (!analyzer) analyzer = new SpectrumAnalyzer();
@@ -3087,10 +2710,9 @@ if (btnLegacySweep) {
       }
 
       const sweepCount = parseInt(sweepCountAdvanced?.value || "2");
-      const remoteLabel = isRemoteMicActive ? " [Remote Mic]" : "";
 
       btnLegacySweep.disabled = true;
-      statusLegacySweep.textContent = `Running ${sweepCount} sweep(s) for averaging...` + remoteLabel;
+      statusLegacySweep.textContent = `Running ${sweepCount} sweep(s) for averaging...`;
       statusLegacySweep.className = "status recording";
 
       const allSpectra = [];
