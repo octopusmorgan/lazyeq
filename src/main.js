@@ -247,6 +247,14 @@ async function ensureAudioContext() {
 
 // Device enumeration
 async function loadDevices() {
+  // Check if MediaDevices API is available (requires HTTPS or localhost)
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    statusDevices.textContent = "Error: MediaDevices API not available (requires HTTPS)";
+    statusDevices.className = "status danger";
+    console.error("MediaDevices API not available");
+    return;
+  }
+
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const audioInputs = devices.filter(d => d.kind === "audioinput");
@@ -304,7 +312,9 @@ btnRefreshDevices.addEventListener("click", async () => {
   statusDevices.textContent = "Refreshing...";
   statusDevices.className = "status";
   try {
-    await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
   } catch (e) {}
   await loadDevices();
 });
