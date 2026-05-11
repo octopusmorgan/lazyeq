@@ -3,24 +3,25 @@
 **Room EQ that learns your room in under a minute.**  
 Plays pink noise through your speakers, measures the room response with your device's microphone, and generates a correction curve — all in the browser. No install, no cables.
 
-## Typical Setup
+## How It Works
 
-1. **PC/Mac** — Runs `npm run dev` and plays pink noise through speakers
-2. **Phone/Tablet** — Opens the app (via network URL) and acts as the measurement microphone
-3. **Result** — EQ profile exported to your audio player (Wavelet, eqMac, etc.)
+**One device does everything** — The device where you open the app:
+1. Plays pink noise through its speakers
+2. Captures the room response with its microphone
+3. Computes and displays the EQ correction in real-time
 
-> The PC plays the test signal, the phone/tablet captures the room response with its mic — no cables needed.
+That's it — no cables, no second device needed. Open the app, tap **Calibrate**, and export your profile when done.
+
+> **Network access** is only needed if you want to develop/debug on a separate device (e.g., run dev server on PC, test on phone).
 
 ## Quick Start
 
 ```bash
 npm install
-npm run dev        # → https://localhost:5173 (or http://localhost:5173)
+npm run dev        # → http://localhost:5173
 ```
 
-Open the link on your PC, grant mic access, tap **Start Calibration**. The app plays pink noise and auto-converges to an EQ curve in 10–30 seconds. Export to Wavelet (Android) or eqMac (macOS) when done.
-
-> **Note**: If accessing from another device on the same network, use the HTTPS URL (e.g., `https://192.168.x.x:5173`). The browser's MediaDevices API requires a secure context (HTTPS or localhost) for microphone access.
+Open the link, grant microphone permission, tap **Start Calibration**. The app plays pink noise through your speakers and captures the room response with your mic. Auto-converges to an EQ curve in 10–30 seconds. Export to Wavelet (Android) or eqMac (macOS) when done.
 
 ## Two Calibration Paths
 
@@ -49,15 +50,13 @@ The correction updates in real time: you can hear the EQ shaping as the system c
 
 The sweep section is in a collapsible **Advanced** panel below the main Auto-EQ card.
 
-## Network Setup (Use Your Phone as Microphone)
+## Network Access (Development/Debug Only)
 
-By default, `npm run dev` serves HTTP on localhost. To use a phone/tablet as the measurement microphone while the PC plays the test signal, you need network access with HTTPS.
+By default, `npm run dev` serves HTTP on localhost. Network access is useful only for development — e.g., running the dev server on your PC and testing on a phone/tablet.
 
-### How It Works
+**Normal use**: Open the app on the device you'll use for calibration, that's it.
 
-1. **PC** — Run `npm run dev` (with HTTPS certs), plays pink noise through speakers
-2. **Phone/Tablet** — Open the network URL (e.g., `https://192.168.x.x:5173`), grants mic permission
-3. The phone captures the room response and sends measurements back to the PC in real time
+> The MediaDevices API requires a secure context (HTTPS or localhost) when accessing via network URL.
 
 ### Quick Setup (one-time)
 
