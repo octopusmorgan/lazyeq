@@ -44,7 +44,7 @@ describe('rankCandidates', () => {
     assert.equal(ranked[ranked.length - 1].deviationDb, 2, 'Lowest deviation should rank last');
   });
 
-  test('narrow candidates score lower than broad ones', () => {
+  test('narrow candidates score higher than broad ones', () => {
     const candidates = [
       makeCandidate(500, 4, 10),    // Very narrow (widthHz=10)
       makeCandidate(500, 4, 500),   // Broad (widthHz=500)
@@ -52,8 +52,8 @@ describe('rankCandidates', () => {
 
     const ranked = rankCandidates(candidates);
 
-    // Broad candidate should score higher (narrowness penalty is 1/widthHz)
-    assert.equal(ranked[0].widthHz, 500, 'Broad candidate should rank higher');
+    // Narrow candidate should score higher (narrowness = 1/widthHz, added to score)
+    assert.equal(ranked[0].widthHz, 10, 'Narrow candidate should rank higher');
   });
 
   test('low confidence reduces score', () => {

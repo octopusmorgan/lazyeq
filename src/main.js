@@ -17,17 +17,12 @@ import { PinkNoiseSource } from "./pinkNoise.js";
 import { ConvergenceDetector } from "./convergence.js";
 import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated, float32ToArray } from "./persistence.js";
 import { PINK_NOISE_GAIN, MEASUREMENT_INTERVAL_MS, CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT, SNR_THRESHOLD_DB, MIN_MEASUREMENTS, CALIBRATION_TIMEOUT_MS, SILENCE_THRESHOLD_DB, INITIAL_PER_BAND_GAIN, SATURATION_RATIO_THRESHOLD, SATURATION_CONSECUTIVE_COUNT, MIN_SIGNAL_LEVEL_DB, LOW_SIGNAL_WINDOW_COUNT } from "./constants.js";
-import { detectCandidates } from './candidateDetector.js';
-import { rankCandidates } from './candidateRanker.js';
-import { synthesizeBands, evaluateCurveAt, gainsFromBands } from './parametricEqSynthesizer.js';
+import { gainsFromBands } from './parametricEqSynthesizer.js';
 import {
-  PEAK_DETECTION_THRESHOLD, NULL_DETECTION_THRESHOLD, NULL_REJECTION_WIDTH_HZ,
-  MERGE_DISTANCE_HZ, RANKING_WEIGHTS, LF_FOCUS_MULTIPLIER, LF_FOCUS_CUTOFF,
-  MAX_CUT_DB, MAX_BOOST_DB, BOOST_CONFIDENCE_THRESHOLD, BOOST_PENALTY,
-  Q_MIN, Q_MAX, MAX_PARAMETRIC_BANDS, LF_MAX_Q,
-  FILTER_POOL_SIZE, FILTER_POOL_SMOOTHING, EVAL_FREQUENCIES, SMART_RESIDUAL_THRESHOLD_DB,
+  FILTER_POOL_SIZE, FILTER_POOL_SMOOTHING, SMART_RESIDUAL_THRESHOLD_DB,
   USE_SMART_CORRECTION,
 } from './constants.js';
+import { runSmartCorrectionPipeline } from './smartCorrectionPipeline.js';
 import { logCalibrationWindow, enableCalibrationLog, logCalibrationError, logCalibrationConverged, isCalibrationDebugEnabled } from './calibrationDebugLog.js';
 
 /**
@@ -1696,102 +1691,6 @@ function updateFilterPool(bands) {
 }
 
 /**
- * Log-frequency interpolation helper for visualization/correction arrays.
- * @param {number[]} freqs
- * @param {Float32Array|number[]} values
- * @param {number} targetFreq
- * @returns {number}
- */
-function interpolateLogFreqValue(freqs, values, targetFreq) {
-  if (!freqs || !values || freqs.length === 0 || values.length === 0) return 0;
-  if (targetFreq <= freqs[0]) return values[0] ?? 0;
-  if (targetFreq >= freqs[freqs.length - 1]) return values[values.length - 1] ?? 0;
-
-  const logTarget = Math.log10(targetFreq);
-  let lo = 0, hi = freqs.length - 1;
-  while (lo < hi - 1) {
-    const mid = (lo + hi) >> 1;
-    if (Math.log10(freqs[mid]) <= logTarget) lo = mid;
-    else hi = mid;
-  }
-
-  const fLo = freqs[lo];
-  const fHi = freqs[hi];
-  if (fHi <= fLo) return values[lo] ?? 0;
-
-  const t = (logTarget - Math.log10(fLo)) / (Math.log10(fHi) - Math.log10(fLo));
-  const yLo = values[lo] ?? 0;
-  const yHi = values[hi] ?? yLo;
-  return yLo * (1 - t) + yHi * t;
-}
-
-/**
- * Process pink noise measurement through the smart correction pipeline:
- * detect → rank → synthesize → evaluate.
- * @param {Float32Array} normalizedResponse - Smoothed, normalized response (64 pts)
- * @param {Float32Array} targetCurve - Target dB at each point
- * @param {number[]} frequencies - Hz labels matching response/target
- * @returns {{ bands: ParametricBand[], gains: Float32Array, evalGains: Float32Array, evalResiduals: Float32Array, candidates: RankedCandidate[] }}
- */
-function _processPinkNoiseSmartCorrection(normalizedResponse, targetCurve, frequencies, previousCandidateFreqs = null) {
-  // 1. Detect candidates
-  const candidates = detectCandidates(normalizedResponse, targetCurve, frequencies, {
-    peakThreshold: PEAK_DETECTION_THRESHOLD,
-    nullThreshold: NULL_DETECTION_THRESHOLD,
-    nullRejectionWidth: NULL_REJECTION_WIDTH_HZ,
-    mergeDistance: MERGE_DISTANCE_HZ,
-    effectiveRange: { low: 100, high: 8000 },
-  });
-
-  // Inject stability from previous window: persistent candidates get a boost,
-  // transient (new) candidates get a penalty. This reduces band toggling.
-  if (previousCandidateFreqs && previousCandidateFreqs.length > 0) {
-    for (const c of candidates) {
-      const isPersistent = previousCandidateFreqs.some(
-        prevFreq => Math.abs(c.freq - prevFreq) / Math.max(prevFreq, 20) < 0.3
-      );
-      c.stability = isPersistent ? 1.5 : 0.7;
-    }
-  }
-
-  // 2. Rank candidates
-  const rankedCandidates = rankCandidates(candidates, {
-    weights: RANKING_WEIGHTS,
-    lfMultiplier: LF_FOCUS_MULTIPLIER,
-    lfCutoff: LF_FOCUS_CUTOFF,
-    maxBands: MAX_PARAMETRIC_BANDS,
-  });
-
-  // 3. Synthesize parametric bands
-  const { bands, gains } = synthesizeBands(rankedCandidates, frequencies, {
-    maxCutDb: MAX_CUT_DB,
-    maxBoostDb: MAX_BOOST_DB,
-    boostConfidenceThreshold: BOOST_CONFIDENCE_THRESHOLD,
-    boostPenalty: BOOST_PENALTY,
-    qMin: Q_MIN,
-    qMax: Q_MAX,
-    maxBands: MAX_PARAMETRIC_BANDS,
-    lfMaxQ: LF_MAX_Q,
-    lfCutoff: LF_FOCUS_CUTOFF,
-  });
-
-  // 4. Evaluate at convergence frequencies for ConvergenceDetector
-  const evalGains = evaluateCurveAt(bands, EVAL_FREQUENCIES);
-  const evalResiduals = new Float32Array(EVAL_FREQUENCIES.length);
-  for (let i = 0; i < EVAL_FREQUENCIES.length; i++) {
-    const freq = EVAL_FREQUENCIES[i];
-    const responseAtFreq = interpolateLogFreqValue(frequencies, normalizedResponse, freq);
-    const targetAtFreq = interpolateLogFreqValue(frequencies, targetCurve, freq);
-    const estimatedAfterEq = responseAtFreq + evalGains[i];
-    evalResiduals[i] = targetAtFreq - estimatedAfterEq;
-  }
-
-  // 5. gains is already a Float32Array at all visData frequencies for the canvas
-
-  return { bands, gains, evalGains, evalResiduals, candidates: rankedCandidates };
-}
-
-/**
  * Core measurement callback — called every ~500ms by measureContinuous.
  * @param {{spectrum: Float32Array, rms: number, elapsedMs: number}} result
  */
@@ -1917,7 +1816,7 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
         targetCurve[i] = getCalibrationTargetDB(freqs[i]);
       }
 
-      const smartResult = _processPinkNoiseSmartCorrection(
+      const smartResult = runSmartCorrectionPipeline(
         processResult.normalizedResponse,
         targetCurve,
         freqs,
@@ -1941,8 +1840,8 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
       liveEQGains = smartResult.gains;
       lastMeasurementResult = { ...processResult, gains: smartResult.gains };
 
-      // Track best result (lowest max |evalResiduals|)
-      const currentMax = Math.max(...Array.from(smartResult.evalResiduals).map(Math.abs));
+      // Track best result using correctable residual severity, not raw uncorrectable rolloff.
+      const currentMax = smartResult.maxResidual;
       if (!bestResult || currentMax < bestMaxDelta) {
         bestResult = lastMeasurementResult;
         bestMaxDelta = currentMax;
@@ -1953,14 +1852,15 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
       if (convergenceDetector) {
         const convergenceResult = convergenceDetector.push(smartResult.evalResiduals);
 
-        const maxResidual = Math.max(...Array.from(smartResult.evalResiduals).map(Math.abs));
+        const correctableMax = smartResult.maxResidual;
         isStable = convergenceResult.converged
           && validMeasurementCount >= MIN_MEASUREMENTS
-          && maxResidual <= SMART_RESIDUAL_THRESHOLD_DB
+          && correctableMax <= SMART_RESIDUAL_THRESHOLD_DB
           && consecutiveLowSignalCount < LOW_SIGNAL_WINDOW_COUNT;
 
         if (import.meta.env.DEV) {
-          console.log(`  Δres = ${convergenceResult.delta.toFixed(2)} dB | max|res| = ${maxResidual.toFixed(1)} dB | bands=${smartResult.bands.length} cand=${smartResult.candidates.length} ${isStable ? '✅ CONVERGED' : ''}`);
+          const p = smartResult.pipelineStats || {};
+          console.log(`  Δres = ${convergenceResult.delta.toFixed(2)} dB | raw_max|res| = ${smartResult.rawMaxResidual.toFixed(1)} dB | corr_max = ${correctableMax.toFixed(1)} dB | bands=${smartResult.bands.length} cand=${smartResult.candidates.length} pass=${smartResult.passName ?? 'n/a'} raw=${p.rawCandidates ?? 0}->width=${p.afterWidthReject ?? 0}->merge=${p.afterMerge ?? 0}->rank=${p.ranked ?? 0}->bands=${p.bands ?? smartResult.bands.length} ${isStable ? '✅ CONVERGED' : ''}`);
         }
 
         if (calibrationDelta) {
