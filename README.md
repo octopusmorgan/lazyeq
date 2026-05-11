@@ -1,7 +1,15 @@
 # lazyEq
 
 **Room EQ that learns your room in under a minute.**  
-Plays pink noise through your speakers, captures the response with your phone's mic via WebRTC, and generates a correction curve — all in the browser. No install, no cables.
+Plays pink noise through your speakers, measures the room response with your device's microphone, and generates a correction curve — all in the browser. No install, no cables.
+
+## Typical Setup
+
+1. **PC/Mac** — Runs `npm run dev` and plays pink noise through speakers
+2. **Phone/Tablet** — Opens the app (via network URL) and acts as the measurement microphone
+3. **Result** — EQ profile exported to your audio player (Wavelet, eqMac, etc.)
+
+> The PC plays the test signal, the phone/tablet captures the room response with its mic — no cables needed.
 
 ## Quick Start
 
@@ -41,9 +49,15 @@ The correction updates in real time: you can hear the EQ shaping as the system c
 
 The sweep section is in a collapsible **Advanced** panel below the main Auto-EQ card.
 
-## HTTPS Setup for Local Network Access
+## Network Setup (Use Your Phone as Microphone)
 
-By default, `npm run dev` serves HTTP. To access from another device on your network (e.g., a phone or tablet), you need HTTPS — browsers block microphone access on non-secure origins.
+By default, `npm run dev` serves HTTP on localhost. To use a phone/tablet as the measurement microphone while the PC plays the test signal, you need network access with HTTPS.
+
+### How It Works
+
+1. **PC** — Run `npm run dev` (with HTTPS certs), plays pink noise through speakers
+2. **Phone/Tablet** — Open the network URL (e.g., `https://192.168.x.x:5173`), grants mic permission
+3. The phone captures the room response and sends measurements back to the PC in real time
 
 ### Quick Setup (one-time)
 
@@ -69,7 +83,7 @@ You'll see:
 ➜  Network: https://192.168.68.101:5173/
 ```
 
-Access from your phone: `https://192.168.68.101:5173/` — the microphone will work.
+On your phone, open: `https://192.168.68.101:5173/`
 
 ### Why HTTPS is required
 
@@ -84,7 +98,7 @@ Chrome, Edge, Brave, and Safari require a **secure context** (HTTPS or localhost
 - **Logarithmic sine sweep** — 20 Hz to 16 kHz in 8 seconds, smooth fade-in/out
 - **1/f spectral compensation** — Corrects the natural energy distribution of log sweeps
 - **Noise floor subtraction** — Power-domain averaging with SNR gating
-- **Phone mic correction** — Generic MEMS microphone curve
+- **Device mic calibration** — Applies generic MEMS microphone correction
 - **Practical EQ limits** — ±4 dB correction, 100 Hz–8 kHz effective range
 - **Export presets** — Wavelet (147-band GraphicEQ) and eqMac (10-band peaking EQ) with preamp normalization
 - **No installation** — Runs entirely in the browser
@@ -93,11 +107,11 @@ Chrome, Edge, Brave, and Safari require a **secure context** (HTTPS or localhost
 
 | Parameter | Recommendation |
 |-----------|----------------|
-| **Phone position** | At ear height, where you normally listen |
+| **Device position** | At ear height, where you normally listen |
 | **Distance** | 2–3 meters from the speaker |
 | **Volume** | 70–80% — loud but clean, no distortion |
 | **Environment** | Quiet room, minimal background noise |
-| **Browser** | Firefox recommended for best WebRTC support |
+| **Network** | PC plays sound, phone captures via browser (both on same Wi-Fi) |
 
 ## Architecture
 
