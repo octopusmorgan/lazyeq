@@ -669,9 +669,15 @@ canvas {
   border: 1px solid var(--glass-border);
 }
 
+/* Canvas aspect ratios (replaces hardcoded HTML width/height attributes) */
 .canvas-live {
+  aspect-ratio: 8 / 3;       /* 800:300 → 8:3 */
   min-height: 130px;
   position: relative;
+}
+
+#canvas-live-legacy {
+  aspect-ratio: 8 / 1.3;     /* 800:130 → 6.15:1 */
 }
 
 .label {

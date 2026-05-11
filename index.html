@@ -77,7 +77,27 @@
                 </select>
               </label>
               <p id="status-legacy-sweep" class="status"></p>
-              <canvas id="canvas-live-legacy" width="800" height="130" style="margin-top:0.5rem;"></canvas>
+              <canvas id="canvas-live-legacy" style="margin-top:0.5rem;"></canvas>
+            </div>
+          </details>
+
+          <!-- Device Persistence & Export/Import -->
+          <details id="device-persistence-section">
+            <summary class="details-summary">Device & Profile</summary>
+            <div class="details-content">
+              <label style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;cursor:pointer;">
+                <input type="checkbox" id="chk-device-persistence" checked>
+                <span style="font-size:0.85rem;color:var(--text-secondary);">Save per device</span>
+              </label>
+              <p style="font-size:0.7rem;color:var(--text-muted);margin-bottom:0.75rem;">
+                Each device gets its own calibration slot. Disable to share profiles across devices.
+              </p>
+              <div class="controls-row">
+                <button id="btn-export-profile" class="btn-secondary">📤 Export Profile</button>
+                <button id="btn-import-profile" class="btn-secondary">📥 Import Profile</button>
+              </div>
+              <input type="file" id="file-import-profile" accept=".json" style="display:none;">
+              <p id="status-persistence" class="status"></p>
             </div>
           </details>
         </section>
@@ -87,7 +107,7 @@
           <div class="card-header">
             <h2>Live Analysis</h2>
           </div>
-          <canvas id="canvas-live" class="canvas-live" width="800" height="300"></canvas>
+          <canvas id="canvas-live" class="canvas-live"></canvas>
           <div id="calibration-delta" class="calibration-delta hidden">
             Δ -- dB
           </div>

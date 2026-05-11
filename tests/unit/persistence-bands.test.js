@@ -15,6 +15,7 @@ import {
   loadPreviousProfile,
   float32ToArray,
   arrayToFloat32,
+  setDevicePersistenceEnabled,
 } from '../../src/persistence.js';
 
 describe('Persistence — Bands Field (PR-3)', () => {
@@ -30,6 +31,7 @@ describe('Persistence — Bands Field (PR-3)', () => {
   beforeEach(() => {
     mockLocalStorage.clear();
     globalThis.localStorage = mockLocalStorage;
+    setDevicePersistenceEnabled(false);
   });
 
   describe('saveProfile with bands', () => {

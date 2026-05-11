@@ -15,7 +15,7 @@ import {
 } from "./eqGenerator.js";
 import { PinkNoiseSource } from "./pinkNoise.js";
 import { ConvergenceDetector } from "./convergence.js";
-import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated, float32ToArray } from "./persistence.js";
+import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated, float32ToArray, exportProfile, importProfile, setDevicePersistenceEnabled, isDevicePersistenceEnabled } from "./persistence.js";
 import { PINK_NOISE_GAIN, MEASUREMENT_INTERVAL_MS, CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT, SNR_THRESHOLD_DB, MIN_MEASUREMENTS, CALIBRATION_TIMEOUT_MS, SILENCE_THRESHOLD_DB, INITIAL_PER_BAND_GAIN, SATURATION_RATIO_THRESHOLD, SATURATION_CONSECUTIVE_COUNT, MIN_SIGNAL_LEVEL_DB, LOW_SIGNAL_WINDOW_COUNT } from "./constants.js";
 import { gainsFromBands } from './parametricEqSynthesizer.js';
 import {
@@ -119,17 +119,19 @@ const sweepCountAdvanced = document.getElementById("sweep-count-advanced");
 const statusLegacySweep = document.getElementById("status-legacy-sweep");
 const canvasLiveLegacy = document.getElementById("canvas-live-legacy");
 
-// Backward-compat aliases for legacy flow still present in main.js
-const btnNoise = null;
-const btnSweep = null;
-const btnStop = null;
-const statusNoise = statusCalibration;
-const statusSweep = statusCalibration;
-const statusNoiseEl = statusCalibration;
-const statusSweepEl = statusCalibration;
-const sweepCountSelectEl = sweepCountAdvanced;
-const cardResults = resultsSection;
+// Device persistence & export/import DOM elements
+const chkDevicePersistence = document.getElementById("chk-device-persistence");
+const btnExportProfile = document.getElementById("btn-export-profile");
+const btnImportProfile = document.getElementById("btn-import-profile");
+const fileImportProfile = document.getElementById("file-import-profile");
+const statusPersistence = document.getElementById("status-persistence");
 
+// Card sections for progress state management
+const cardDevices = document.getElementById("step-devices");
+const cardNoise = document.getElementById("step-noise");
+const cardSweep = document.getElementById("step-sweep");
+const cardResults = document.getElementById("step-results");
+const cardExport = document.getElementById("step-export");
 let resultsReady = false;
 
 // Hide results section until first measurement completes
@@ -158,6 +160,34 @@ function initAudioContext() {
   }
   return audioContext;
 }
+
+/**
+ * Handle visibility changes — suspend/resume AudioContext to save resources
+ * when the tab is hidden (mobile app switcher, tab change, lock screen).
+ */
+function handleVisibilityChange() {
+  if (!audioContext) return;
+
+  if (document.hidden) {
+    // Tab/browser hidden — suspend AudioContext, keep buffers in memory
+    if (audioContext.state === 'running') {
+      audioContext.suspend().catch(() => {});
+      if (import.meta.env.DEV) console.log('[Visibility] AudioContext suspended');
+    }
+  } else {
+    // Tab/browser visible again — resume
+    if (audioContext.state === 'suspended') {
+      // Only resume if we should be processing (calibration running or sweep active)
+      if (calibrationRunning || sweepSource) {
+        audioContext.resume().catch(() => {});
+        if (import.meta.env.DEV) console.log('[Visibility] AudioContext resumed');
+      }
+    }
+  }
+}
+
+// Register visibility handler (runs once at module load)
+document.addEventListener('visibilitychange', handleVisibilityChange);
 
 async function ensureAudioContext() {
   const ctx = initAudioContext();
@@ -253,7 +283,118 @@ micSelect.addEventListener("change", () => {
   }
 });
 
-// ─── Analyzer Initialization ─────────────────────────────────────────
+// ─── Device Persistence & Export/Import ──────────────────────────────
+
+// Initialize persistence checkbox from stored preference
+if (chkDevicePersistence) {
+  chkDevicePersistence.checked = isDevicePersistenceEnabled();
+  chkDevicePersistence.addEventListener("change", () => {
+    setDevicePersistenceEnabled(chkDevicePersistence.checked);
+    if (import.meta.env.DEV) console.log('[Persistence] Device-scoped:', chkDevicePersistence.checked);
+  });
+}
+
+// Export profile
+if (btnExportProfile) {
+  btnExportProfile.addEventListener("click", () => {
+    const json = exportProfile();
+    if (!json) {
+      if (statusPersistence) {
+        statusPersistence.textContent = "No calibration profile to export.";
+        statusPersistence.className = "status danger";
+      }
+      return;
+    }
+
+    // Download as file
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `lazyEq-profile-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    if (statusPersistence) {
+      statusPersistence.textContent = "Profile exported successfully.";
+      statusPersistence.className = "status done";
+    }
+  });
+}
+
+// Import profile
+if (btnImportProfile && fileImportProfile) {
+  btnImportProfile.addEventListener("click", () => {
+    fileImportProfile.click();
+  });
+
+  fileImportProfile.addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const result = importProfile(text);
+
+      if (result.success) {
+        if (statusPersistence) {
+          if (result.rolledBack) {
+            statusPersistence.textContent = "Imported profile was saturated — previous profile kept.";
+            statusPersistence.className = "status info";
+          } else {
+            statusPersistence.textContent = `Imported ${result.type} profile with ${result.bandsCount || 0} bands.`;
+            statusPersistence.className = "status done";
+          }
+        }
+        // Refresh the UI state if results are currently shown
+        if (resultsReady && liveEQGains) {
+          // Reload from localStorage to reflect the imported profile
+          const imported = loadProfile();
+          if (imported?.gains) {
+            liveEQGains = imported.gains;
+            // Re-render results section with imported gains
+            if (resultsSection) resultsSection.classList.remove("hidden");
+            resizeCanvases();
+            const gainsArray = Array.from(imported.gains);
+            if (canvasEq) {
+              const eqCtx = canvasEq.getContext("2d");
+              renderEQCurve(eqCtx, gainsArray);
+            }
+            populateEQTable(
+              ACTIVE_EQ_FREQS.map((freq, i) => ({ x: freq, y: 0 })),
+              gainsArray
+            );
+            if (btnExportWavelet) {
+              btnExportWavelet.disabled = false;
+              btnExportWavelet.dataset.gains = JSON.stringify(gainsArray);
+            }
+            if (btnExportEqMac) {
+              btnExportEqMac.disabled = false;
+              btnExportEqMac.dataset.gains = JSON.stringify(gainsArray);
+            }
+          }
+        }
+      } else {
+        if (statusPersistence) {
+          statusPersistence.textContent = "Invalid profile file. Check the format and try again.";
+          statusPersistence.className = "status danger";
+        }
+      }
+    } catch (err) {
+      if (statusPersistence) {
+        statusPersistence.textContent = "Failed to read file: " + err.message;
+        statusPersistence.className = "status danger";
+      }
+    }
+
+    // Reset file input so the same file can be selected again
+    fileImportProfile.value = '';
+  });
+}
+
+// ─── Remote Mic Integration ──────────────────────────────────────────
 
 async function initAnalyzer(ctx) {
   await analyzer.init(selectedMicDeviceId, ctx);
@@ -651,7 +792,7 @@ function downloadFile(filename, content) {
 
 function resizeCanvases() {
   const dpr = window.devicePixelRatio || 1;
-  [canvasSpectrum, canvasEstimated, canvasEq, canvasLive].forEach((canvas) => {
+  [canvasSpectrum, canvasEstimated, canvasEq, canvasLive, canvasLiveLegacy].forEach((canvas) => {
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const cssW = Math.max(1, Math.round(rect.width));
@@ -1869,6 +2010,11 @@ if (btnStopCalibration) {
     stopCalibration();
   });
 }
+
+// Resize legacy canvas when Advanced section is opened
+document.getElementById("advanced-section")?.addEventListener("toggle", (e) => {
+  if (e.target.open) resizeCanvases();
+});
 
 // ─── End Live Calibration Event Wiring ────────────────────────────────
 

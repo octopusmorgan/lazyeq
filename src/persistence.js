@@ -5,10 +5,72 @@
  *
  * Float32Array is converted to a plain Array for JSON serialization.
  * ParametricBand[] is serialized as a plain array of {freq, gain, Q} objects.
+ *
+ * Device-aware mode: when enabled (default), profiles are scoped by device fingerprint.
+ * Fingerprint = screen dimensions + user agent hash. Disable to share profiles across devices.
  */
 
-const STORAGE_KEY = 'lazyEq_calibration';
-const STORAGE_KEY_PREV = 'lazyEq_calibration_prev';
+const STORAGE_KEY_BASE = 'lazyEq_calibration';
+const STORAGE_KEY_BASE_PREV = 'lazyEq_calibration_prev';
+const DEVICE_PERSISTENCE_KEY = 'lazyEq_device_persistence';
+
+let _persistenceEnabled = null;
+
+/**
+ * Generate a device fingerprint for storage key scoping.
+ * Uses screen dimensions + user agent + language for reasonable uniqueness.
+ * @returns {string} Short device hash
+ */
+export function getDeviceFingerprint() {
+  // Node.js / test environment — no screen/navigator available
+  if (typeof screen === 'undefined' || typeof navigator === 'undefined') {
+    return 'node-test-env';
+  }
+  const raw = `${screen.width}x${screen.height}|${navigator.userAgent}|${navigator.language}`;
+  // Simple hash: btoa + trim to 12 chars
+  return btoa(raw).replace(/[+/=]/g, '').slice(0, 12);
+}
+
+/**
+ * Check if device-scoped persistence is enabled.
+ * @returns {boolean}
+ */
+export function isDevicePersistenceEnabled() {
+  if (_persistenceEnabled !== null) return _persistenceEnabled;
+  try {
+    const stored = localStorage.getItem(DEVICE_PERSISTENCE_KEY);
+    _persistenceEnabled = stored !== 'false'; // default true
+  } catch {
+    _persistenceEnabled = true;
+  }
+  return _persistenceEnabled;
+}
+
+/**
+ * Enable or disable device-scoped persistence.
+ * @param {boolean} enabled
+ */
+export function setDevicePersistenceEnabled(enabled) {
+  _persistenceEnabled = enabled;
+  try {
+    localStorage.setItem(DEVICE_PERSISTENCE_KEY, String(enabled));
+  } catch { /* quota exceeded, non-critical */ }
+}
+
+/**
+ * Get the active storage keys (device-scoped or global).
+ * @returns {{ current: string, previous: string }}
+ */
+export function getStorageKeys() {
+  if (isDevicePersistenceEnabled()) {
+    const fp = getDeviceFingerprint();
+    return {
+      current: `${STORAGE_KEY_BASE}_${fp}`,
+      previous: `${STORAGE_KEY_BASE_PREV}_${fp}`,
+    };
+  }
+  return { current: STORAGE_KEY_BASE, previous: STORAGE_KEY_BASE_PREV };
+}
 
 /**
  * Convert Float32Array to plain array for JSON serialization.
@@ -52,6 +114,7 @@ export function isProfileSaturated(gains) {
  * @returns {{rolledBack: boolean}}
  */
 export function saveProfile(profile) {
+  const { current, previous } = getStorageKeys();
   const serializable = {
     gains: profile.gains ? Array.from(profile.gains) : null,
     timestamp: profile.timestamp,
@@ -60,20 +123,20 @@ export function saveProfile(profile) {
   };
 
   // Move current → previous
-  const current = localStorage.getItem(STORAGE_KEY);
-  if (current) {
-    localStorage.setItem(STORAGE_KEY_PREV, current);
+  const currentRaw = localStorage.getItem(current);
+  if (currentRaw) {
+    localStorage.setItem(previous, currentRaw);
   }
 
   // Check saturation: if all bands at ±4dB and previous exists, rollback
-  if (profile.gains && isProfileSaturated(profile.gains) && current) {
-    // Restore previous → current (auto-rollback)
-    localStorage.setItem(STORAGE_KEY, current);
+  if (profile.gains && isProfileSaturated(profile.gains) && currentRaw) {
+    // Restore current (previous was already set to the old current — keep it)
+    localStorage.setItem(current, currentRaw);
     return { rolledBack: true };
   }
 
   // Normal save: new → current
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
+  localStorage.setItem(current, JSON.stringify(serializable));
   return { rolledBack: false };
 }
 
@@ -82,7 +145,7 @@ export function saveProfile(profile) {
  * @returns {{gains: Float32Array|null, timestamp: number, type: string, bands?: {freq: number, gain: number, Q: number}[]}|null}
  */
 export function loadProfile() {
-  return _loadFromKey(STORAGE_KEY);
+  return _loadFromKey(getStorageKeys().current);
 }
 
 /**
@@ -90,7 +153,80 @@ export function loadProfile() {
  * @returns {{gains: Float32Array|null, timestamp: number, type: string, bands?: {freq: number, gain: number, Q: number}[]}|null}
  */
 export function loadPreviousProfile() {
-  return _loadFromKey(STORAGE_KEY_PREV);
+  return _loadFromKey(getStorageKeys().previous);
+}
+
+/**
+ * Export the current calibration profile as a JSON string.
+ * Includes metadata for cross-device portability.
+ * @returns {string|null} JSON string or null if no profile exists
+ */
+export function exportProfile() {
+  const profile = loadProfile();
+  if (!profile) return null;
+
+  const exportData = {
+    format: 'lazyEq-profile-v1',
+    exportedAt: Date.now(),
+    deviceFingerprint: getDeviceFingerprint(),
+    calibration: {
+      gains: profile.gains ? Array.from(profile.gains) : null,
+      timestamp: profile.timestamp,
+      type: profile.type,
+      bands: profile.bands || undefined,
+    },
+  };
+
+  return JSON.stringify(exportData, null, 2);
+}
+
+/**
+ * Import a calibration profile from a JSON string.
+ * Supports lazyEq-profile-v1 format and legacy raw format.
+ * @param {string} jsonString
+ * @returns {{ success: boolean, type: string|null, bandsCount: number|null }}
+ */
+export function importProfile(jsonString) {
+  try {
+    const data = JSON.parse(jsonString);
+
+    let profile;
+    // New v1 format with metadata
+    if (data.format === 'lazyEq-profile-v1' && data.calibration) {
+      profile = data.calibration;
+    }
+    // Legacy raw profile format (backward compat)
+    else if (data.type && (data.type === 'pink-noise' || data.type === 'sweep')) {
+      profile = data;
+    } else {
+      return { success: false, type: null, bandsCount: null };
+    }
+
+    // Validate required fields: must be array of exactly 8 finite numbers
+    if (!Array.isArray(profile.gains) || typeof profile.timestamp !== 'number') {
+      return { success: false, type: null, bandsCount: null };
+    }
+    if (profile.gains.length !== 8 || !profile.gains.every(g => typeof g === 'number' && isFinite(g))) {
+      return { success: false, type: null, bandsCount: null };
+    }
+
+    const bands = Array.isArray(profile.bands) ? profile.bands : [];
+
+    const saveResult = saveProfile({
+      gains: new Float32Array(profile.gains),
+      timestamp: profile.timestamp,
+      type: profile.type,
+      bands: bands.length > 0 ? bands : undefined,
+    });
+
+    if (saveResult.rolledBack) {
+      return { success: true, rolledBack: true, type: profile.type, bandsCount: bands.length };
+    }
+
+    return { success: true, type: profile.type, bandsCount: bands.length };
+  } catch {
+    return { success: false, type: null, bandsCount: null };
+  }
 }
 
 /**

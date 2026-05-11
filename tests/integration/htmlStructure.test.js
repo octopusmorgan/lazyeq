@@ -96,9 +96,10 @@ describe('HTML structure — new elements', () => {
     assert.ok(html.includes('results-section hidden'), 'results-section should have hidden class');
   });
 
-  test('canvas-live has appropriate dimensions', () => {
-    assert.ok(html.includes('width="800"'), 'canvas-live should have width');
-    assert.ok(html.includes('height="300"'), 'canvas-live should have height');
+  test('canvas-live uses responsive CSS dimensions', () => {
+    assert.ok(html.includes('id="canvas-live"'), 'canvas-live should exist');
+    assert.ok(!html.includes('width="800"'), 'canvas-live should NOT have hardcoded width (use CSS aspect-ratio)');
+    assert.ok(!html.includes('height="300"'), 'canvas-live should NOT have hardcoded height (use CSS aspect-ratio)');
   });
 });
 

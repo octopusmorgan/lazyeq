@@ -6,7 +6,7 @@
 
 import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated } from '../../src/persistence.js';
+import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated, setDevicePersistenceEnabled } from '../../src/persistence.js';
 
 describe('Persistence', () => {
   // Mock localStorage
@@ -18,10 +18,11 @@ describe('Persistence', () => {
     clear: () => { for (const k in store) delete store[k]; },
   };
 
-  // Replace global localStorage for tests
+  // Replace global localStorage for tests — disable device scoping for clean assertions
   beforeEach(() => {
     mockLocalStorage.clear();
     globalThis.localStorage = mockLocalStorage;
+    setDevicePersistenceEnabled(false);
   });
 
   test('saveProfile stores data in localStorage', () => {

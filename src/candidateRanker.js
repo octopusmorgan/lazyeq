@@ -49,10 +49,11 @@ export function rankCandidates(candidates, options = {}) {
     const confidencePenalty = 1 - (c.confidence ?? 0.5);
 
     // Narrow peaks/nulls should be prioritized (higher 1/width -> higher score).
+    // Bandwidth is negated so broad bands are penalized, not rewarded.
     let score =
       w.deviation * Math.abs(c.deviationDb) +
       w.stability * stability +
-      w.bandwidth * bandwidthFactor +
+      w.bandwidth * (-bandwidthFactor) +
       w.narrowness * narrowness -
       w.lowConfidence * confidencePenalty;
 
