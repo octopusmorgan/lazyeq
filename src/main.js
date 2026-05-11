@@ -94,19 +94,13 @@ let perBandMaxCut = null;      // Float32Array(8), init to -6.0
 let perBandSaturationCount = null; // Uint8Array(8)
 let prevBandCorrected = null;  // Float32Array(8)
 
-// DOM Elements
-const btnNoise = document.getElementById("btn-noise");
-const btnSweep = document.getElementById("btn-sweep");
-const btnStop = document.getElementById("btn-stop");
+// DOM Elements — Active elements present in index.html
 const btnExportWavelet = document.getElementById("btn-export-wavelet");
 const btnExportEqMac = document.getElementById("btn-export-eqmac");
 const btnRefreshDevices = document.getElementById("btn-refresh-devices");
-const statusNoise = document.getElementById("status-noise");
-const statusSweep = document.getElementById("status-sweep");
 const statusExport = document.getElementById("status-export");
 const statusDevices = document.getElementById("status-devices");
 const micSelect = document.getElementById("mic-select");
-const sweepCountSelect = document.getElementById("sweep-count");
 const canvasSpectrum = document.getElementById("canvas-spectrum");
 const canvasEstimated = document.getElementById("canvas-estimated");
 const canvasEq = document.getElementById("canvas-eq");
@@ -119,100 +113,37 @@ const statusCalibration = document.getElementById("status-calibration");
 const calibrationDelta = document.getElementById("calibration-delta");
 const resultsSection = document.getElementById("results-section");
 
-// Legacy sweep fallback mapping (current UI uses calibration ids)
-const legacyStatusFallback = statusCalibration;
-const statusNoiseEl = document.getElementById("status-noise") || legacyStatusFallback;
-const statusSweepEl = document.getElementById("status-sweep") || legacyStatusFallback;
-const sweepCountSelectEl = document.getElementById("sweep-count") || document.getElementById("sweep-count-advanced");
-
-// Progress bar elements
-const noiseProgressContainer = document.getElementById("noise-progress-container");
-const noiseProgressBar = document.getElementById("noise-progress-bar");
-const sweepProgressContainer = document.getElementById("sweep-progress-container");
-const sweepProgressBar = document.getElementById("sweep-progress-bar");
-
-// Step indicator elements
-const calStep1 = document.getElementById("cal-step-1");
-const calStep2 = document.getElementById("cal-step-2");
-const calStep3 = document.getElementById("cal-step-3");
-const calConn1 = document.getElementById("cal-conn-1");
-const calConn2 = document.getElementById("cal-conn-2");
-
 // Legacy sweep (Advanced section) DOM elements
 const btnLegacySweep = document.getElementById("btn-legacy-sweep");
 const sweepCountAdvanced = document.getElementById("sweep-count-advanced");
 const statusLegacySweep = document.getElementById("status-legacy-sweep");
 const canvasLiveLegacy = document.getElementById("canvas-live-legacy");
 
-// Card sections for progress state management
-const cardDevices = document.getElementById("step-devices");
-const cardNoise = document.getElementById("step-noise");
-const cardSweep = document.getElementById("step-sweep");
-const cardResults = document.getElementById("step-results");
-const cardExport = document.getElementById("step-export");
+// Backward-compat aliases for legacy flow still present in main.js
+const btnNoise = null;
+const btnSweep = null;
+const btnStop = null;
+const statusNoise = statusCalibration;
+const statusSweep = statusCalibration;
+const statusNoiseEl = statusCalibration;
+const statusSweepEl = statusCalibration;
+const sweepCountSelectEl = sweepCountAdvanced;
+const cardResults = resultsSection;
+
 let resultsReady = false;
 
 // Hide results section until first measurement completes
-if (cardResults) cardResults.classList.add("hidden");
+if (resultsSection) resultsSection.classList.add("hidden");
 
-// ─── Step Indicator & Progress Helpers ───────────────────────────────
+// ─── Progress Helpers ────────────────────────────────────────────────
 
-/**
- * Update the calibration step indicator state.
- * @param {number} step - 1, 2, or 3
- * @param {'active' | 'completed' | 'pending'} state
- */
-function updateStepIndicator(step, state) {
-  const stepEl = step === 1 ? calStep1 : step === 2 ? calStep2 : calStep3;
-  if (!stepEl) return;
-
-  stepEl.classList.remove("active", "completed");
-  if (state !== "pending") {
-    stepEl.classList.add(state);
-  }
-
-  // Update connectors
-  if (state === "completed" && step === 1 && calConn1) {
-    calConn1.classList.add("completed");
-  }
-  if (state === "completed" && step === 2 && calConn2) {
-    calConn2.classList.add("completed");
-  }
-
-  // Update card sections (active/completed/pending)
-  const cards = [cardDevices, cardNoise, cardSweep, cardResults, cardExport];
-  const cardMap = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4 }; // step → card index
-  // step 1=Noise card, 2=Sweep card, 3=Export card
-  const cardIdx = { 1: 1, 2: 2, 3: 4 };
-  const card = cardIdx[step] != null ? cards[cardIdx[step]] : null;
-  if (card) {
-    card.classList.remove("active", "completed");
-    if (state === "active") card.classList.add("active");
-    if (state === "completed") card.classList.add("completed");
-  }
-}
-
-/**
- * Set progress bar percentage (0-100).
- * @param {'noise' | 'sweep'} type
- * @param {number} percent - 0 to 100
- */
+// Progress bar functions (no-op — progress bars removed from HTML)
 function setProgressBar(type, percent) {
-  const container = type === "noise" ? noiseProgressContainer : sweepProgressContainer;
-  const bar = type === "noise" ? noiseProgressBar : sweepProgressBar;
-  if (container) container.classList.remove("hidden");
-  if (bar) bar.style.width = Math.min(100, Math.max(0, percent)) + "%";
+  // Progress bars not in current UI
 }
 
-/**
- * Hide a progress bar.
- * @param {'noise' | 'sweep'} type
- */
 function hideProgressBar(type) {
-  const container = type === "noise" ? noiseProgressContainer : sweepProgressContainer;
-  const bar = type === "noise" ? noiseProgressBar : sweepProgressBar;
-  if (container) container.classList.add("hidden");
-  if (bar) bar.style.width = "0%";
+  // Progress bars not in current UI
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -322,7 +253,7 @@ micSelect.addEventListener("change", () => {
   }
 });
 
-// ─── Remote Mic Integration ──────────────────────────────────────────
+// ─── Analyzer Initialization ─────────────────────────────────────────
 
 async function initAnalyzer(ctx) {
   await analyzer.init(selectedMicDeviceId, ctx);
@@ -737,473 +668,9 @@ function resizeCanvases() {
   });
 }
 
-// Step 1: Capture noise floor (legacy sweep path — preserved for Advanced mode)
-let noiseCalibrationInProgress = false;
-if (btnNoise) {
-btnNoise.addEventListener("click", async () => {
-  // Prevent duplicate handlers (Vite HMR can accumulate listeners)
-  if (noiseCalibrationInProgress) return;
-  
-  try {
-    // Auto-load devices on first user gesture if not loaded yet
-    if (!selectedMicDeviceId && micSelect.options.length <= 1 && micSelect.options[0]?.textContent === "Loading devices…") {
-      statusDevices.textContent = "Detecting microphones...";
-      statusDevices.className = "status";
-      await loadDevices();
-    }
-
-    noiseCalibrationInProgress = true;
-
-    // ── Local mic: obtain stream ONCE and reuse it ──
-    // We use getUserMedia({audio:true}) (generic constraint) to avoid the
-    // ephemeral-deviceId issue where IDs from enumerateDevices() before
-    // permission is granted become invalid after getUserMedia() is called.
-    let localMicStream = null;
-    // Check if mic permission was previously blocked (Chrome remembers)
-    try {
-      if (navigator.permissions) {
-        const micPerm = await navigator.permissions.query({ name: "microphone" });
-        if (micPerm.state === "denied") {
-          statusNoiseEl.textContent = "Microphone access was previously blocked for this site. Click the camera/lock icon in the address bar and change it to 'Allow', then try again.";
-          statusNoiseEl.className = "status danger";
-          noiseCalibrationInProgress = false;
-          return;
-        }
-      }
-    } catch (_) { /* Permissions API not available or query failed */ }
-
-    try {
-      localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Re-enumerate now that we have permission — gets real device labels
-      await loadDevices();
-    } catch (permErr) {
-      throw permErr;
-    }
-
-    statusNoiseEl.textContent = "Step 1 of 3: Please stay quiet for 5 seconds to measure room noise floor...";
-    statusNoiseEl.className = "status";
-    btnNoise.disabled = true;
-    updateStepIndicator(1, "active");
-
-    const ctx = await ensureAudioContext();
-    analyzer = new SpectrumAnalyzer();
-    await analyzer.init(localMicStream, ctx);
-
-    statusNoiseEl.textContent = "Recording noise floor... keep quiet";
-    statusNoiseEl.className = "status recording";
-    hideProgressBar("noise");
-
-    const startTime = Date.now();
-    const captureDuration = 5000;
-
-    const updateNoiseDisplay = async () => {
-      const elapsed = (Date.now() - startTime) / 1000;
-      const progress = Math.min(100, (elapsed / (captureDuration / 1000)) * 100);
-      setProgressBar("noise", progress);
-
-      if (analyzer && analyzer.getRMSLevel) {
-        const db = analyzer.getRMSLevel();
-        statusNoiseEl.textContent = `Recording noise floor... ${db.toFixed(0)} dB — keep quiet`;
-      }
-      if (Date.now() - startTime < captureDuration) {
-        setTimeout(updateNoiseDisplay, 100);
-      }
-    };
-    updateNoiseDisplay();
-
-await analyzer.captureNoiseFloor(5);
-
-  // Self-calibrate microphone using phone speaker (invisible to user)
-  statusNoiseEl.textContent = "Calibrating mic response...";
-  await analyzer.calibrateMicrophone();
-
-  if (analyzer.noiseBuffer) {
-      let minDB = Infinity, maxDB = -Infinity;
-      for (let i = 0; i < analyzer.noiseBuffer.length; i++) {
-        if (analyzer.noiseBuffer[i] > -100) {
-          minDB = Math.min(minDB, analyzer.noiseBuffer[i]);
-          maxDB = Math.max(maxDB, analyzer.noiseBuffer[i]);
-        }
-      }
-      if (minDB === Infinity) {
-        statusNoiseEl.textContent = "Step 1 complete: Noise floor captured (silent environment)";
-      } else {
-        statusNoiseEl.textContent = `Step 1 complete: Noise floor measured (${minDB.toFixed(0)} to ${maxDB.toFixed(0)} dB)`;
-      }
-    } else {
-      statusNoiseEl.textContent = "Step 1 complete: Noise floor captured";
-    }
-    statusNoiseEl.className = "status done";
-    hideProgressBar("noise");
-    updateStepIndicator(1, "completed");
-    updateStepIndicator(2, "active");
-    btnSweep.disabled = false;
-    noiseCalibrationInProgress = false;
-  } catch (err) {
-    console.error(err);
-    if (err.name === "NotAllowedError" || err.message?.includes("permission")) {
-      statusNoiseEl.textContent = "Microphone access was blocked. Check your browser's address bar for the blocked-permissions icon, allow mic access, and try again.";
-    } else {
-      statusNoiseEl.textContent = "Noise floor calibration failed. Make sure your mic is working and try again.";
-    }
-    statusNoiseEl.className = "status danger";
-    hideProgressBar("noise");
-    updateStepIndicator(1, "pending");
-    btnNoise.disabled = false;
-    noiseCalibrationInProgress = false;
-  }
-});
-} // end btnNoise guard
-
-/**
- * Compute frequency spectrum from recorded PCM using Welch's method.
- * Produces a dB spectrum compatible with the existing processing pipeline.
- *
- * @param {Float32Array} pcm - Raw PCM recording
- * @param {number} sampleRate - Audio sample rate
- * @param {number} targetBins - Number of output bins (matches FFT_SIZE/2 = 1024)
- * @returns {Float32Array} Spectrum in dB
- */
-function computeSpectrumFromPCM(pcm, sampleRate, targetBins) {
-  const fftSize = 65536; // Power of 2, good frequency resolution
-  const N = fftSize;
-
-  // Use only the sweep-duration portion of the recording
-  const sweepSamples = Math.floor(sweepDuration * sampleRate);
-  const signal = pcm.length >= sweepSamples
-    ? pcm.subarray(0, sweepSamples)
-    : pcm;
-
-  // Hann window
-  const window = new Float32Array(N);
-  let windowPower = 0;
-  for (let i = 0; i < N; i++) {
-    window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (N - 1)));
-    windowPower += window[i] * window[i];
-  }
-
-  // Welch's method: average periodograms with 50% overlap
-  const hopSize = Math.floor(N / 2);
-  const numWindows = Math.max(1, Math.floor((signal.length - N) / hopSize) + 1);
-  const spectrum = new Float64Array(N / 2);
-
-  for (let w = 0; w < numWindows; w++) {
-    const offset = w * hopSize;
-    const real = new Float64Array(N);
-    const imag = new Float64Array(N);
-
-    for (let i = 0; i < N && (offset + i) < signal.length; i++) {
-      real[i] = signal[offset + i] * window[i];
-    }
-
-    // Radix-2 Cooley-Tukey FFT (in-place)
-    // Bit-reversal permutation
-    for (let i = 1, j = 0; i < N; i++) {
-      let bit = N >> 1;
-      for (; j & bit; bit >>= 1) j ^= bit;
-      j ^= bit;
-      if (i < j) {
-        [real[i], real[j]] = [real[j], real[i]];
-        [imag[i], imag[j]] = [imag[j], imag[i]];
-      }
-    }
-
-    // Butterfly stages
-    for (let len = 2; len <= N; len <<= 1) {
-      const halfLen = len >> 1;
-      const angle = -2 * Math.PI / len;
-      const wRe = Math.cos(angle);
-      const wIm = Math.sin(angle);
-      for (let i = 0; i < N; i += len) {
-        let curRe = 1, curIm = 0;
-        for (let j = 0; j < halfLen; j++) {
-          const tRe = curRe * real[i + j + halfLen] - curIm * imag[i + j + halfLen];
-          const tIm = curRe * imag[i + j + halfLen] + curIm * real[i + j + halfLen];
-          real[i + j + halfLen] = real[i + j] - tRe;
-          imag[i + j + halfLen] = imag[i + j] - tIm;
-          real[i + j] += tRe;
-          imag[i + j] += tIm;
-          const newRe = curRe * wRe - curIm * wIm;
-          curIm = curRe * wIm + curIm * wRe;
-          curRe = newRe;
-        }
-      }
-    }
-
-    // Accumulate magnitude squared
-    for (let i = 0; i < N / 2; i++) {
-      spectrum[i] += (real[i] * real[i] + imag[i] * imag[i]) / (numWindows * windowPower);
-    }
-  }
-
-  // Convert to dB
-  const fullSpectrum = new Float32Array(N / 2);
-  for (let i = 0; i < N / 2; i++) {
-    fullSpectrum[i] = spectrum[i] > 0 ? 10 * Math.log10(spectrum[i]) : -120;
-  }
-
-  // Resample to target bins using log-frequency interpolation
-  const result = new Float32Array(targetBins);
-  const srcNyquist = sampleRate / 2;
-  for (let i = 0; i < targetBins; i++) {
-    const freq = (i / targetBins) * srcNyquist;
-    const srcIdx = (freq / srcNyquist) * (N / 2);
-    const idxLo = Math.max(0, Math.min(N / 2 - 2, Math.floor(srcIdx)));
-    const idxHi = idxLo + 1;
-    const frac = srcIdx - idxLo;
-    result[i] = fullSpectrum[idxLo] * (1 - frac) + fullSpectrum[idxHi] * frac;
-  }
-
-  return result;
-}
-
-// Step 2: Play Sine Sweep (supports multi-sweep averaging) — legacy path preserved for Advanced mode
-if (btnSweep) {
-btnSweep.addEventListener("click", async () => {
-  try {
-
-    // Check noise floor was calibrated
-    if (!analyzer || !analyzer.noiseBuffer) {
-      statusSweepEl.textContent = "Please complete Step 1 (Noise Floor) before running the sweep.";
-      statusSweepEl.className = "status danger";
-      btnSweep.disabled = false;
-      btnStop.disabled = true;
-      return;
-    }
-
-    // Read sweep count
-    const sweepCount = parseInt(sweepCountSelectEl?.value || "1");
-
-    btnSweep.disabled = true;
-    btnStop.disabled = false;
-    hideProgressBar("sweep");
-    updateStepIndicator(2, "active");
-
-    const ctx = await ensureAudioContext();
-
-    // Reinitialize with same audioContext but preserve noiseBuffer
-    await initAnalyzer(ctx);
-
-    if (sweepCount === 1) {
-      // ── Single sweep (original behavior) ──
-      statusSweepEl.textContent = "Step 2 of 3: Playing 8-second sweep test tone through your speakers...";
-      statusSweepEl.className = "status recording";
-
-      sweepSource = new SineSweepSource(ctx);
-      sweepSource.createBuffer(sweepDuration);
-
-      // Start AudioWorklet recording before playing the sweep
-      let recordingPromise = null;
-      let useWorklet = true;
-      try {
-        recordingPromise = analyzer.recordSweep(sweepDuration);
-      } catch (err) {
-        console.warn('[Sweep] AudioWorklet recording failed, using AnalyserNode fallback:', err.message);
-        useWorklet = false;
-      }
-
-      const sweepStartTime = Date.now();
-      const sweepUpdateInterval = setInterval(() => {
-        const elapsed = (Date.now() - sweepStartTime) / 1000;
-        const progress = Math.min(100, (elapsed / sweepDuration) * 100);
-        setProgressBar("sweep", progress);
-
-        if (analyzer && analyzer.getRMSLevel) {
-          const db = analyzer.getRMSLevel();
-          statusSweepEl.textContent = `Recording sweep response... ${db.toFixed(0)} dB`;
-        }
-      }, 200);
-
-      sweepSource.onComplete = async () => {
-        clearInterval(sweepUpdateInterval);
-        setProgressBar("sweep", 100);
-        statusSweepEl.textContent = "Sweep finished — processing frequency response...";
-        statusSweepEl.className = "status info";
-        btnStop.disabled = true;
-
-        sweepProcessTimeout = setTimeout(async () => {
-          if (animationFrame) {
-            cancelAnimationFrame(animationFrame);
-            animationFrame = null;
-          }
-
-          // If AudioWorklet recording was used, process the recorded PCM
-          if (useWorklet && recordingPromise) {
-            try {
-              const recordedPCM = await recordingPromise;
-              if (recordedPCM && recordedPCM.length > 0) {
-                if (import.meta.env.DEV) {
-                  console.log('[Sweep] AudioWorklet recording complete:', recordedPCM.length, 'samples');
-                }
-                // Compute spectrum from recorded PCM
-                const fftSize = analyzer.analyserNode.fftSize;
-                const targetBins = fftSize / 2;
-                const spectrum = computeSpectrumFromPCM(recordedPCM, analyzer.audioContext.sampleRate, targetBins);
-
-                // Replace accumulatedSpectrum with the computed spectrum for processing
-                accumulatedSpectrum = spectrum;
-                frameCount = 100; // Ensure we pass the "enough data" check
-              }
-            } catch (err) {
-              console.warn('[Sweep] AudioWorklet processing failed, falling back to peak-hold:', err.message);
-              // Fall back to existing peak-hold data
-            }
-          }
-
-          await processSweepResults();
-        }, 500);
-      };
-
-      sweepSource.start();
-      renderLiveSweep();
-
-    } else {
-      // ── Multi-sweep averaging ──
-      statusSweepEl.textContent = `Step 2 of 3: Running ${sweepCount} sweeps for averaging...`;
-      statusSweepEl.className = "status recording";
-
-      const allSpectra = [];
-
-      for (let sweepNum = 0; sweepNum < sweepCount; sweepNum++) {
-        // Reset accumulation for each sweep
-        accumulatedSpectrum = null;
-        frameCount = 0;
-
-        statusSweepEl.textContent = `Sweep ${sweepNum + 1} of ${sweepCount}...`;
-        const sweepProgress = ((sweepNum) / sweepCount) * 100;
-        setProgressBar("sweep", sweepProgress);
-
-        sweepSource = new SineSweepSource(ctx);
-        sweepSource.createBuffer(sweepDuration);
-
-        // Wait for this sweep to complete
-        await new Promise((resolve, reject) => {
-          const sweepStartTime = Date.now();
-          const sweepUpdateInterval = setInterval(() => {
-            const elapsed = (Date.now() - sweepStartTime) / 1000;
-            const sweepProgress = ((sweepNum + elapsed / sweepDuration) / sweepCount) * 100;
-            setProgressBar("sweep", sweepProgress);
-
-            if (analyzer && analyzer.getRMSLevel) {
-              const db = analyzer.getRMSLevel();
-              statusSweepEl.textContent = `Sweep ${sweepNum + 1} of ${sweepCount}... ${db.toFixed(0)} dB`;
-            }
-          }, 200);
-
-          sweepSource.onComplete = async () => {
-            clearInterval(sweepUpdateInterval);
-
-            // Apply 1/f compensation to the accumulated peak-hold spectrum
-            const f0 = 20;
-            const sr = analyzer.audioContext.sampleRate;
-            const fftSz = analyzer.analyserNode.fftSize;
-            const bw = sr / fftSz;
-
-            const compensatedSpectrum = new Float32Array(accumulatedSpectrum.length);
-            for (let i = 0; i < accumulatedSpectrum.length; i++) {
-              const freq = i * bw;
-              if (freq > f0) {
-                compensatedSpectrum[i] = accumulatedSpectrum[i] + 10 * Math.log10(freq / f0);
-              } else {
-                compensatedSpectrum[i] = accumulatedSpectrum[i];
-              }
-            }
-
-            // Store the compensated spectrum
-            allSpectra.push(compensatedSpectrum);
-
-            // Reset for next sweep
-            accumulatedSpectrum = null;
-            frameCount = 0;
-
-            resolve();
-          };
-
-          sweepSource.start();
-          renderLiveSweep();
-        });
-
-        // Brief pause between sweeps
-        if (sweepNum < sweepCount - 1) {
-          statusSweepEl.textContent = `Pause before sweep ${sweepNum + 2}...`;
-          await new Promise(r => setTimeout(r, 500));
-        }
-      }
-
-      // All sweeps done — average the compensated spectra
-      setProgressBar("sweep", 100);
-      statusSweepEl.textContent = `Averaging ${sweepCount} sweeps...`;
-      statusSweepEl.className = "status info";
-      btnStop.disabled = true;
-
-      // Average in the compensated domain (after 1/f compensation, before noise subtraction)
-      const averaged = new Float32Array(allSpectra[0].length);
-      for (let i = 0; i < averaged.length; i++) {
-        let sum = 0;
-        for (const spectrum of allSpectra) {
-          sum += spectrum[i];
-        }
-        averaged[i] = sum / allSpectra.length;
-      }
-
-      // Restore accumulatedSpectrum with the averaged result for processSweepResults
-      accumulatedSpectrum = averaged;
-      frameCount = 100; // Ensure we pass the "enough data" check
-
-      // Store a flag so processSweepResults knows averaging was done (skip re-compensation)
-      window._sweepAveraged = true;
-
-      sweepProcessTimeout = setTimeout(async () => {
-        if (animationFrame) {
-          cancelAnimationFrame(animationFrame);
-          animationFrame = null;
-        }
-        await processSweepResults();
-      }, 500);
-    }
-  } catch (err) {
-    console.error(err);
-    statusSweepEl.textContent = "Sweep failed: " + err.message + ". Try again or re-calibrate the noise floor first.";
-    statusSweepEl.className = "status danger";
-    hideProgressBar("sweep");
-    btnSweep.disabled = false;
-  }
-});
-} // end btnSweep guard
-
-// Stop and analyze (legacy sweep path — preserved for Advanced mode)
-if (btnStop) {
-btnStop.addEventListener("click", async () => {
-  if (animationFrame) {
-    cancelAnimationFrame(animationFrame);
-    animationFrame = null;
-  }
-
-  statusSweepEl.textContent = "Processing sweep response...";
-  statusSweepEl.className = "status info";
-  btnStop.disabled = true;
-  hideProgressBar("sweep");
-
-  try {
-    if (sweepProcessTimeout) {
-      clearTimeout(sweepProcessTimeout);
-      sweepProcessTimeout = null;
-    }
-    if (sweepSource) {
-      sweepSource.stop();
-      sweepSource = null;
-    }
-    // If we have a sweep response promise, use it; otherwise fall back to peak-hold
-    await processSweepResults();
-  } catch (err) {
-    console.error(err);
-    statusSweepEl.textContent = "Processing failed: " + err.message + ". Try playing the sweep again.";
-    statusSweepEl.className = "status danger";
-    hideProgressBar("sweep");
-    btnSweep.disabled = false;
-  }
-});
-} // end btnStop guard
+// ─────────────────────────────────────────────────────────────────────
+// Legacy sweep workflow removed — now using live calibration only
+// ─────────────────────────────────────────────────────────────────────
 
 // Calibration target in dB at frequency `freq`.
 // Keep this in sync with the curve shown on the live canvas to avoid visual drift.
@@ -1211,14 +678,11 @@ function getCalibrationTargetDB(freq) {
   return getHarmanTargetDB(Math.max(20, Math.min(20000, freq)));
 }
 
-// Shared processing for sweep results
+// Shared processing for measurement results (used by live pink-noise path)
 // @param {Float32Array} spectrum - Frequency spectrum data
-// @param {Object} options - { method, calibrationData, noiseFloor }
-// @param {Object} options.gainLimits - { maxGain, maxCut, bassMax }
-// @param {number} options.smoothingFactor - Smoothing factor for adaptiveSmooth
-// @returns {Object} Processed result with frequency data
+// @param {Object} options - { method, gainLimits, smoothingFactor, effectiveRange, perBandMaxGain, perBandMaxCut }
+// @returns {Object} Processed result with visualization data and gain proposal
 function _processMeasurementResults(spectrum, options = {}) {
-  const method = options.method || 'sweep';
   const gainLimits = options.gainLimits || { maxGain: 8, maxCut: -12, bassMax: 4 };
   const smoothingFactor = options.smoothingFactor || 1.0;
   const perBandMaxGain = options.perBandMaxGain || null;
@@ -1229,22 +693,19 @@ function _processMeasurementResults(spectrum, options = {}) {
   const linearFreqLabels = analyzer.getLinearFrequencyLabels();
   const visData = generateVisualizationData(spectrum, linearFreqLabels);
 
-  // AutoEQ-inspired processing
   const responseArr = new Float32Array(visData.length);
   visData.forEach((d, i) => { responseArr[i] = d.y; });
 
-  // Sanitize: replace -Infinity/NaN with noise floor to avoid polluting smoothing
   const NOISE_FLOOR_DB = -120;
   for (let i = 0; i < responseArr.length; i++) {
     if (!isFinite(responseArr[i])) {
       responseArr[i] = NOISE_FLOOR_DB;
-      visData[i].y = NOISE_FLOOR_DB; // also fix the source so EQ table shows values
+      visData[i].y = NOISE_FLOOR_DB;
     }
   }
 
   const smoothedResponse = adaptiveSmooth(responseArr, smoothingFactor);
 
-  // Normalize: center the measurement so its average in the effective range is 0 dB.
   let sumRange = 0, countRange = 0;
   for (let i = 0; i < smoothedResponse.length; i++) {
     const freq = visData[i].x;
@@ -1261,11 +722,9 @@ function _processMeasurementResults(spectrum, options = {}) {
       normalizedResponse[i] = smoothedResponse[i] - rangeAvg;
     }
   } else {
-    // No usable data in effective range — pass through unnormalized
     normalizedResponse.set(smoothedResponse);
   }
 
-  // Calculate gains using a practical target curve with gentle tilt
   const rawGains = new Float32Array(visData.length);
   for (let i = 0; i < visData.length; i++) {
     const freq = visData[i].x;
@@ -1273,16 +732,13 @@ function _processMeasurementResults(spectrum, options = {}) {
     rawGains[i] = targetOffset - normalizedResponse[i];
   }
 
-  // Apply gain limits with smooth fade-out outside effective range
   const gains = Array.from(rawGains).map((g, i) => {
     const freq = visData[i].x;
     let gain = g;
 
-    // Determine per-band limits if available, otherwise use global limits
     let bandMaxGain = maxGain;
     let bandMaxCut = maxCut;
     if (perBandMaxGain && perBandMaxCut) {
-      // Find nearest active EQ band
       let nearestBand = 0;
       let minDist = Infinity;
       for (let b = 0; b < ACTIVE_EQ_FREQS.length; b++) {
@@ -1292,35 +748,32 @@ function _processMeasurementResults(spectrum, options = {}) {
           nearestBand = b;
         }
       }
-      // Only use per-band limits if frequency is close enough to a band
-      if (minDist < 0.3) { // within ~2x in log space
+      if (minDist < 0.3) {
         bandMaxGain = perBandMaxGain[nearestBand];
         bandMaxCut = perBandMaxCut[nearestBand];
       }
     }
 
-    // Apply hard limits first
     if (freq < 100) {
       gain = Math.min(gain, bassMax);
     }
     gain = Math.max(bandMaxCut, Math.min(bandMaxGain, gain));
 
-    // Smooth fade-out outside effective range (1 octave transition)
     if (freq < effectiveRange.low) {
       const fadeFreq = effectiveRange.low / 2;
       if (freq <= fadeFreq) {
-        gain *= 0; // No correction below half the low limit
+        gain *= 0;
       } else {
         const ratio = Math.log2(freq / fadeFreq);
-        gain *= ratio; // Linear fade in log space
+        gain *= ratio;
       }
     } else if (freq > effectiveRange.high) {
       const fadeFreq = effectiveRange.high * 2;
       if (freq >= fadeFreq) {
-        gain *= 0; // No correction above double the high limit
+        gain *= 0;
       } else {
         const ratio = 1 - Math.log2(freq / effectiveRange.high);
-        gain *= ratio; // Linear fade in log space
+        gain *= ratio;
       }
     }
 
@@ -1328,181 +781,6 @@ function _processMeasurementResults(spectrum, options = {}) {
   });
 
   return { visData, normalizedResponse, gains, rangeAvg };
-}
-
-// Process sweep results using peak-hold FFT with spectral compensation
-async function processSweepResults() {
-  if (sweepProcessing) return;
-  sweepProcessing = true;
-
-  // Peak-hold FFT with spectral compensation for log sweep 1/f energy distribution
-  if (!accumulatedSpectrum || frameCount < 10) {
-    sweepProcessing = false;
-    statusSweep.textContent = "Not enough data captured. Play the sweep for at least a few seconds, or try again.";
-    statusSweep.className = "status danger";
-    btnStop.disabled = false;
-    btnSweep.disabled = false;
-    return;
-  }
-
-  let compensated;
-
-  // Check if averaging was already done (multi-sweep mode) — skip re-compensation
-  if (window._sweepAveraged) {
-    // Already compensated and averaged — use directly
-    compensated = accumulatedSpectrum;
-    window._sweepAveraged = false; // Reset flag
-  } else {
-    // Single sweep — apply 1/f compensation
-    const f0 = 20; // Sweep start frequency
-    const sr = analyzer.audioContext.sampleRate;
-    const fftSz = analyzer.analyserNode.fftSize;
-    const bw = sr / fftSz;
-
-    compensated = new Float32Array(accumulatedSpectrum.length);
-    for (let i = 0; i < accumulatedSpectrum.length; i++) {
-      const freq = i * bw;
-      if (freq > f0) {
-        compensated[i] = accumulatedSpectrum[i] + 10 * Math.log10(freq / f0);
-      } else {
-        compensated[i] = accumulatedSpectrum[i];
-      }
-    }
-  }
-
-  const corrected = analyzer.getCorrectedSpectrumFromDB(compensated);
-
-  let minS = Infinity, maxS = -Infinity, filled = 0;
-  for (let i = 0; i < corrected.length; i++) {
-    if (corrected[i] > -100) {
-      minS = Math.min(minS, corrected[i]);
-      maxS = Math.max(maxS, corrected[i]);
-      filled++;
-    }
-  }
-
-  // Detailed diagnostic: raw vs compensated vs corrected at key frequencies
-  if (import.meta.env.DEV) {
-    const sampleRate = analyzer.audioContext.sampleRate;
-    const fftSize = analyzer.analyserNode.fftSize;
-    const binWidth = sampleRate / fftSize;
-    const keyFreqs = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 12500, 16000];
-
-    console.log("=== SWEEP RESULTS ===");
-    console.log("Bins with signal (>-100dB):", filled, "of", corrected.length);
-    console.log("Range:", minS.toFixed(1), "→", maxS.toFixed(1));
-    console.log("Method: Peak-hold FFT + 1/f spectral compensation");
-    console.log("Sample rate:", sampleRate, "| FFT size:", fftSize, "| Bin width:", binWidth.toFixed(1), "Hz");
-    console.log("");
-    console.log("=== RAW vs COMPENSATED vs CORRECTED ===");
-    console.log("Freq\t| Raw dB\t| Compensated\t| Corrected dB");
-    console.log("--------|-----------|---------------|---------------");
-    for (const freq of keyFreqs) {
-      const binIdx = Math.round(freq / binWidth);
-      const raw = accumulatedSpectrum[binIdx] ?? -120;
-      const comp = compensated[binIdx] ?? -120;
-      const cor = corrected[binIdx] ?? -120;
-      console.log(`${freq.toString().padStart(6)} Hz | ${raw.toFixed(1).padStart(8)}\t| ${comp.toFixed(1).padStart(12)}\t| ${cor.toFixed(1)}`);
-    }
-    console.log("");
-
-    // Also log the noise floor range if available
-    if (analyzer.noiseBuffer) {
-      let noiseMin = Infinity, noiseMax = -Infinity;
-      for (let i = 0; i < analyzer.noiseBuffer.length; i++) {
-        if (analyzer.noiseBuffer[i] > -120) {
-          noiseMin = Math.min(noiseMin, analyzer.noiseBuffer[i]);
-          noiseMax = Math.max(noiseMax, analyzer.noiseBuffer[i]);
-        }
-      }
-      console.log("Noise floor range:", noiseMin.toFixed(1), "→", noiseMax.toFixed(1), "dB");
-    }
-  }
-
-  statusSweep.textContent = "Step 3 of 3: Measurement complete! Your EQ curve is ready to export.";
-  statusSweep.className = "status done";
-  updateStepIndicator(2, "completed");
-  updateStepIndicator(3, "active");
-
-  // Show results card BEFORE resizing canvases, otherwise getBoundingClientRect
-  // returns 0x0 for hidden elements and graphs render on zero-size bitmaps.
-  if (cardResults) cardResults.classList.remove("hidden");
-
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-  resizeCanvases();
-
-  // Use shared processing with realistic limits for small Bluetooth speakers
-  // Focus correction on the speaker's effective range (100Hz-8kHz)
-  const { visData, normalizedResponse, gains, rangeAvg } = _processMeasurementResults(corrected, {
-    method: 'sweep',
-    gainLimits: { maxGain: 4, maxCut: -4, bassMax: 4 },
-    smoothingFactor: 2.5,
-    effectiveRange: { low: 100, high: 8000 }
-  });
-
-  // Log final processing results at key frequencies
-  if (import.meta.env.DEV) {
-    const keyFreqs = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 12500, 16000];
-    console.log("=== FINAL EQ CURVE ===");
-    console.log("rangeAvg (normalization):", rangeAvg.toFixed(1), "dB");
-    console.log("");
-    console.log("Freq\t| Response dB\t| EQ Gain dB");
-    console.log("--------|---------------|------------");
-    for (const freq of keyFreqs) {
-      const point = visData.find(v => Math.abs(v.x - freq) < freq * 0.1);
-      if (point) {
-        const idx = visData.indexOf(point);
-        const response = normalizedResponse[idx];
-        const gain = gains[idx];
-        console.log(`${freq.toString().padStart(6)} Hz | ${response.toFixed(1).padStart(12)}\t| ${gain >= 0 ? '+' : ''}${gain.toFixed(1)}`);
-      }
-    }
-  }
-
-  // Render graphs
-  const specCtx = canvasSpectrum.getContext("2d");
-  renderSpectrum(specCtx, corrected, "#ff6b6b");
-
-  const smoothedArr = Array.from(normalizedResponse);
-  const estimatedResponse = smoothedArr.map((v, i) => v + (gains[i] || 0));
-  const estCtx = canvasEstimated.getContext("2d");
-  renderSpectrum(estCtx, estimatedResponse, "#00f5d4");
-
-  if (canvasEq) {
-    const eqCtx = canvasEq.getContext("2d");
-    renderEQCurve(eqCtx, gains);
-  }
-
-  populateEQTable(visData, gains);
-
-  btnExportWavelet.disabled = false;
-  btnExportEqMac.disabled = false;
-  btnExportWavelet.dataset.gains = JSON.stringify(gains);
-  btnExportEqMac.dataset.gains = JSON.stringify(gains);
-  btnExportEqMac.dataset.visData = JSON.stringify(visData);
-  resultsReady = true;
-
-  // Release microphone after results are ready
-  try {
-    analyzer?.destroy();
-  } finally {
-    analyzer = null;
-    if (import.meta.env.DEV) console.log("Microphone released");
-  }
-
-  // Suspend audio context to fully release microphone
-  setTimeout(() => {
-    if (audioContext && audioContext.state !== 'closed') {
-      audioContext.suspend().then(() => {
-        if (import.meta.env.DEV) console.log("Audio context suspended");
-      });
-    }
-  }, 100);
-
-  accumulatedSpectrum = null;
-  frameCount = 0;
-  btnSweep.disabled = false;
-  sweepProcessing = false;
 }
 
 // ─── Live Pink Noise Calibration Flow ─────────────────────────────────
