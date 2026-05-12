@@ -1962,13 +1962,13 @@ if (btnLegacySweep) {
             const bw = sr / fftSz;
 
             const compensatedSpectrum = new Float32Array(accumulatedSpectrum.length);
+            const n = Math.max(frameCount, 1);
             for (let i = 0; i < accumulatedSpectrum.length; i++) {
+              const avgDb = accumulatedSpectrum[i] / n;
               const freq = i * bw;
-              if (freq > f0) {
-                compensatedSpectrum[i] = accumulatedSpectrum[i] + 10 * Math.log10(freq / f0);
-              } else {
-                compensatedSpectrum[i] = accumulatedSpectrum[i];
-              }
+              compensatedSpectrum[i] = freq > f0
+                ? avgDb + 10 * Math.log10(freq / f0)
+                : avgDb;
             }
 
             allSpectra.push(compensatedSpectrum);
@@ -2049,6 +2049,15 @@ function renderLiveSweepOnCanvas(canvas) {
     legacyAnimationFrame = requestAnimationFrame(() => renderLiveSweepOnCanvas(canvas));
     return;
   }
+
+  // Accumulate spectrum data for post-sweep processing
+  if (!accumulatedSpectrum) {
+    accumulatedSpectrum = new Float32Array(data.length);
+  }
+  for (let i = 0; i < data.length; i++) {
+    accumulatedSpectrum[i] += data[i];
+  }
+  frameCount++;
 
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
