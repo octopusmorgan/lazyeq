@@ -6,7 +6,7 @@
 
 import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated, exportProfile, importProfile } from '../../src/persistence.js';
+import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated } from '../../src/persistence.js';
 
 describe('Persistence', () => {
   // Mock localStorage

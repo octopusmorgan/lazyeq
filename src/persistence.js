@@ -5,8 +5,6 @@
  *
  * Float32Array is converted to a plain Array for JSON serialization.
  * ParametricBand[] is serialized as a plain array of {freq, gain, Q} objects.
- *
- * Supports export/import for cross-device profile transfer.
  */
 
 const STORAGE_KEY = 'lazyEq_calibration';
@@ -93,78 +91,6 @@ export function loadProfile() {
  */
 export function loadPreviousProfile() {
   return _loadFromKey(STORAGE_KEY_PREV);
-}
-
-/**
- * Export the current calibration profile as a JSON string.
- * Includes metadata for cross-device portability.
- * @returns {string|null} JSON string or null if no profile exists
- */
-export function exportProfile() {
-  const profile = loadProfile();
-  if (!profile) return null;
-
-  const exportData = {
-    format: 'lazyEq-profile-v1',
-    exportedAt: Date.now(),
-    calibration: {
-      gains: profile.gains ? Array.from(profile.gains) : null,
-      timestamp: profile.timestamp,
-      type: profile.type,
-      bands: profile.bands || undefined,
-    },
-  };
-
-  return JSON.stringify(exportData, null, 2);
-}
-
-/**
- * Import a calibration profile from a JSON string.
- * Supports lazyEq-profile-v1 format and legacy raw format.
- * @param {string} jsonString
- * @returns {{ success: boolean, type: string|null, bandsCount: number|null }}
- */
-export function importProfile(jsonString) {
-  try {
-    const data = JSON.parse(jsonString);
-
-    let profile;
-    // New v1 format with metadata
-    if (data.format === 'lazyEq-profile-v1' && data.calibration) {
-      profile = data.calibration;
-    }
-    // Legacy raw profile format (backward compat)
-    else if (data.type && (data.type === 'pink-noise' || data.type === 'sweep')) {
-      profile = data;
-    } else {
-      return { success: false, type: null, bandsCount: null };
-    }
-
-    // Validate required fields: must be array of exactly 8 finite numbers
-    if (!Array.isArray(profile.gains) || typeof profile.timestamp !== 'number') {
-      return { success: false, type: null, bandsCount: null };
-    }
-    if (profile.gains.length !== 8 || !profile.gains.every(g => typeof g === 'number' && isFinite(g))) {
-      return { success: false, type: null, bandsCount: null };
-    }
-
-    const bands = Array.isArray(profile.bands) ? profile.bands : [];
-
-    const saveResult = saveProfile({
-      gains: new Float32Array(profile.gains),
-      timestamp: profile.timestamp,
-      type: profile.type,
-      bands: bands.length > 0 ? bands : undefined,
-    });
-
-    if (saveResult.rolledBack) {
-      return { success: true, rolledBack: true, type: profile.type, bandsCount: bands.length };
-    }
-
-    return { success: true, type: profile.type, bandsCount: bands.length };
-  } catch {
-    return { success: false, type: null, bandsCount: null };
-  }
 }
 
 /**
