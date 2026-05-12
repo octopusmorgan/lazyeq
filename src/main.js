@@ -15,7 +15,7 @@ import {
 } from "./eqGenerator.js";
 import { PinkNoiseSource } from "./pinkNoise.js";
 import { ConvergenceDetector } from "./convergence.js";
-import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated, float32ToArray, exportProfile, importProfile, setDevicePersistenceEnabled, isDevicePersistenceEnabled } from "./persistence.js";
+import { saveProfile, loadProfile, loadPreviousProfile, isProfileSaturated, float32ToArray, exportProfile, importProfile } from "./persistence.js";
 import { PINK_NOISE_GAIN, MEASUREMENT_INTERVAL_MS, CONVERGENCE_THRESHOLD_DB, CONVERGENCE_WINDOW_COUNT, SNR_THRESHOLD_DB, MIN_MEASUREMENTS, CALIBRATION_TIMEOUT_MS, SILENCE_THRESHOLD_DB, INITIAL_PER_BAND_GAIN, SATURATION_RATIO_THRESHOLD, SATURATION_CONSECUTIVE_COUNT, MIN_SIGNAL_LEVEL_DB, LOW_SIGNAL_WINDOW_COUNT } from "./constants.js";
 import { gainsFromBands } from './parametricEqSynthesizer.js';
 import {
@@ -66,6 +66,7 @@ let pinkNoise = null;
 let convergenceDetector = null;
 let continuousMeasurement = null;
 let liveSpectrum = null;
+let liveVisData = null; // {x, y}[] for the live canvas red line (normalized room response)
 let liveEQGains = null;
 let calibrationRunning = false;
 let calibrationStartTime = 0;
@@ -119,8 +120,7 @@ const sweepCountAdvanced = document.getElementById("sweep-count-advanced");
 const statusLegacySweep = document.getElementById("status-legacy-sweep");
 const canvasLiveLegacy = document.getElementById("canvas-live-legacy");
 
-// Device persistence & export/import DOM elements
-const chkDevicePersistence = document.getElementById("chk-device-persistence");
+// Export/import DOM elements
 const btnExportProfile = document.getElementById("btn-export-profile");
 const btnImportProfile = document.getElementById("btn-import-profile");
 const fileImportProfile = document.getElementById("file-import-profile");
@@ -283,16 +283,7 @@ micSelect.addEventListener("change", () => {
   }
 });
 
-// ─── Device Persistence & Export/Import ──────────────────────────────
-
-// Initialize persistence checkbox from stored preference
-if (chkDevicePersistence) {
-  chkDevicePersistence.checked = isDevicePersistenceEnabled();
-  chkDevicePersistence.addEventListener("change", () => {
-    setDevicePersistenceEnabled(chkDevicePersistence.checked);
-    if (import.meta.env.DEV) console.log('[Persistence] Device-scoped:', chkDevicePersistence.checked);
-  });
-}
+// ─── Export/Import Profile ───────────────────────────────────────────
 
 // Export profile
 if (btnExportProfile) {
@@ -958,6 +949,7 @@ function startLiveCalibration() {
   lowInputWarningCount = 0;
   lastMeasurementResult = null;
   liveSpectrum = null;
+  liveVisData = null;
   liveEQGains = null;
 
   // Reset Phase 2 stability gating state
@@ -1204,6 +1196,7 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
       }
       // Update UI with flat EQ (no correction) but keep canvas and state alive
       liveSpectrum = spectrum;
+      liveVisData = processResult.visData.map((d, i) => ({ x: d.x, y: processResult.normalizedResponse[i] }));
       liveEQGains = new Float32Array(ACTIVE_EQ_FREQS.length);
       lastMeasurementResult = { ...processResult, gains: liveEQGains };
       if (calibrationDelta) calibrationDelta.textContent = 'Δ — dB';
@@ -1256,6 +1249,7 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
 
       // Update shared state for canvas rendering
       liveSpectrum = spectrum;
+      liveVisData = processResult.visData.map((d, i) => ({ x: d.x, y: processResult.normalizedResponse[i] }));
       liveEQGains = smartResult.gains;
       lastMeasurementResult = { ...processResult, gains: smartResult.gains };
 
@@ -1832,10 +1826,9 @@ function renderLiveCalibration(timestamp, final = false) {
     drawLine(cachedTargetCurve, "#6a6a7a", true, 0.4);
   }
 
-  // Line 2: Pink noise spectrum (updating, coral)
-  if (liveSpectrum && analyzer) {
-    const spectrumPoints = generateVisualizationData(liveSpectrum, analyzer.getLinearFrequencyLabels());
-    drawLine(spectrumPoints, "#ff6b6b");
+  // Line 2: Pink noise spectrum — normalized room response (updating, coral)
+  if (liveVisData) {
+    drawLine(liveVisData, "#ff6b6b");
   }
 
   // Line 3: Estimated response after EQ (room + correction, cyan)
