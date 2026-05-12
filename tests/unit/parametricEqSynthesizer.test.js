@@ -85,10 +85,10 @@ describe('synthesizeBands', () => {
     assert.ok(bands[0].freq < LF_FOCUS_CUTOFF, 'Should be below LF cutoff');
   });
 
-  test('nearby same-polarity candidates keep consistent polarity and bounded output', () => {
+  test('merge nearby same-polarity candidates: within 1/3 octave → single band', () => {
     const candidates = [
       makeRankedCandidate(500, 4, 200, 0.8, 10),
-      makeRankedCandidate(680, 3, 200, 0.8, 9),
+      makeRankedCandidate(600, 3, 200, 0.8, 9), // 600/500 = 1.20 < cbrt(2) (within 1/3 octave)
     ];
     const { bands } = synthesizeBands(candidates);
 

@@ -166,7 +166,7 @@ export function runSmartCorrectionPipeline(normalizedResponse, targetCurve, freq
   let chosen = primary;
 
   const shouldRunRelaxed =
-    primary.maxResidual > RELAXED_PASS_TRIGGER_MAX_RESIDUAL_DB &&
+    primary.rawMaxResidual > RELAXED_PASS_TRIGGER_MAX_RESIDUAL_DB &&
     primary.bands.length <= 1;
 
   if (shouldRunRelaxed) {
