@@ -859,23 +859,6 @@ canvas {
   flex: 1;
 }
 
-.btn-export {
-  background: linear-gradient(135deg, rgba(0, 245, 212, 0.1), rgba(0, 245, 212, 0.05));
-  border: 1px solid var(--accent-primary-glow);
-  color: var(--accent-primary);
-}
-
-.btn-export:hover:not(:disabled) {
-  background: linear-gradient(135deg, var(--accent-primary-dim), rgba(0, 245, 212, 0.1));
-  box-shadow: 0 4px 16px rgba(0, 245, 212, 0.2);
-}
-
-.btn-export:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-  border-color: rgba(0, 245, 212, 0.15);
-}
-
 /* ===== DEVICE ROW ===== */
 .device-row {
   display: flex;
