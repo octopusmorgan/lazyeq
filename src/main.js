@@ -1163,7 +1163,7 @@ function onMeasurementCallback({ spectrum, rms, elapsedMs }) {
         isStable = convergenceResult.converged
           && validMeasurementCount >= MIN_MEASUREMENTS
           && correctableMax <= SMART_RESIDUAL_THRESHOLD_DB
-          && smartResult.rawMaxResidual < 6.0
+          && smartResult.maxResidual < 6.0
           && consecutiveLowSignalCount < LOW_SIGNAL_WINDOW_COUNT;
 
         if (import.meta.env.DEV) {
