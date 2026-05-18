@@ -113,6 +113,8 @@ export class CalibrationOrchestrator {
       liveVisData: this._liveVisData,
       liveEQGains: this._liveEQGains,
       lastResult: this._lastMeasurementResult,
+      liveSpectrum: this._liveSpectrum,
+      cumulativeGains: this._cumulativeEQGains,
     };
   }
 
