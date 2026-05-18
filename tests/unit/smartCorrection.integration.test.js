@@ -884,4 +884,34 @@ describe('Smart Correction — Convergence Criteria', () => {
     // But convergence should be BLOCKED by the signal level guard
     // (This is verified in the convergence criteria test above)
   });
+
+  test('pipeline correction brings corrected response within 1dB RMS of target at all frequencies', () => {
+    // Given a known "bad room" spectrum: a broad 6dB peak at 250Hz
+    // When the full pipeline runs generating correction bands
+    // Then the CORRECTED response (response + evaluation curve at each freq point)
+    // should be within 1dB RMS of the flat target (0 dB).
+    const { response, target, frequencies } = syntheticRoomResponse([
+      { freq: 250, gainDb: 6, widthOctaves: 0.8 },
+    ], 128);
+
+    const { bands } = runPipeline(response, target, frequencies);
+    const correctionCurve = evaluateCurveAt(bands, frequencies);
+
+    // Compute corrected output = raw response + applied correction
+    // Then RMS error of corrected output vs flat target
+    let sumSq = 0;
+    let validCount = 0;
+    for (let i = 0; i < frequencies.length; i++) {
+      // Skip frequencies outside the correction band's effective range
+      // (no correction applied, so raw deviation would dominate RMS unfairly)
+      const corrected = response[i] + correctionCurve[i];
+      const error = corrected - target[i];
+      sumSq += error * error;
+      validCount++;
+    }
+    const rmsError = Math.sqrt(sumSq / validCount);
+
+    assert.ok(rmsError < 1.0,
+      `Corrected response RMS error should be < 1dB, got ${rmsError.toFixed(3)}dB`);
+  });
 });
