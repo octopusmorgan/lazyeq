@@ -29,6 +29,7 @@ describe('SpectrumAnalyzer.measureContinuous — mutex', () => {
     const analyzer = new SpectrumAnalyzer();
     // Mark as initialized so mutex check is reached before init guard
     analyzer.analyserNode = {};
+    // Simulate active measurement by setting the flag directly
     analyzer._measuring = true;
 
     assert.throws(
