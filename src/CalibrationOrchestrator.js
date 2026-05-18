@@ -430,7 +430,13 @@ export class CalibrationOrchestrator {
       y: processResult.normalizedResponse[i],
     }));
     this._liveEQGains = new Float32Array(this._ACTIVE_EQ_FREQS.length);
-    this._lastMeasurementResult = { ...processResult, gains: this._liveEQGains };
+    this._lastMeasurementResult = {
+      visData: processResult.visData,
+      normalizedResponse: processResult.normalizedResponse,
+      gains: processResult.gains,          // 64-element: used by showResults (EQ table/curve)
+      rangeAvg: processResult.rangeAvg,
+      eqBandGains: this._liveEQGains,       // 8-element: active EQ band corrections
+    };
     this._emitProgress('Δ — dB');
 
     // Keep convergence detector alive
@@ -483,7 +489,13 @@ export class CalibrationOrchestrator {
       y: processResult.normalizedResponse[i],
     }));
     this._liveEQGains = smartResult.gains;
-    this._lastMeasurementResult = { ...processResult, gains: smartResult.gains };
+    this._lastMeasurementResult = {
+      visData: processResult.visData,
+      normalizedResponse: processResult.normalizedResponse,
+      gains: processResult.gains,       // 64-element: used by showResults (EQ table/curve)
+      rangeAvg: processResult.rangeAvg,
+      eqBandGains: smartResult.gains,    // 8-element: active EQ band corrections
+    };
 
     // Track best result
     const currentMax = smartResult.maxResidual;
