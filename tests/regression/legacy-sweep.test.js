@@ -151,13 +151,19 @@ describe('T013: Legacy Sweep Path Regression', () => {
       );
     });
 
-    test('adaptiveSmooth function preserved', () => {
+    test('adaptiveSmooth imported from rendering.js', () => {
       const mainJsPath = join(__dirname, '../../src/main.js');
       const content = readFileSync(mainJsPath, 'utf-8');
 
       assert.ok(
-        content.includes('function adaptiveSmooth('),
-        'adaptiveSmooth function should be preserved in main.js'
+        content.includes("import { hexToRgba, renderSpectrum, renderEQCurve, adaptiveSmooth }"),
+        'adaptiveSmooth should be imported from rendering.js in main.js'
+      );
+
+      // Verify the inline function has been removed
+      assert.ok(
+        !content.includes('function adaptiveSmooth('),
+        'adaptiveSmooth function should be extracted from main.js'
       );
     });
 
