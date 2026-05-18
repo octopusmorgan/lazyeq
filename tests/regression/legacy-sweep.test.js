@@ -156,13 +156,13 @@ describe('T013: Legacy Sweep Path Regression', () => {
       );
     });
 
-    test('gaussianSmooth function preserved', () => {
+    test('gaussianSmooth function removed', () => {
       const mainJsPath = join(__dirname, '../../src/main.js');
       const content = readFileSync(mainJsPath, 'utf-8');
 
       assert.ok(
-        content.includes('function gaussianSmooth('),
-        'gaussianSmooth function should be preserved in main.js'
+        !content.includes('function gaussianSmooth('),
+        'gaussianSmooth function should NOT be present in main.js'
       );
     });
   });
