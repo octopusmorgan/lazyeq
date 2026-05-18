@@ -1856,7 +1856,6 @@ btnExportWavelet.addEventListener("click", () => {
   downloadFile("lazyeq-wavelet.txt", content);
   statusExport.textContent = "Wavelet preset exported — import it into the Wavelet app on Android";
   statusExport.className = "status done";
-  updateStepIndicator(3, "completed");
 });
 
 btnExportEqMac.addEventListener("click", () => {
@@ -1866,7 +1865,6 @@ btnExportEqMac.addEventListener("click", () => {
   downloadFile("lazyeq-eqmac.json", content);
   statusExport.textContent = "eqMac preset exported — open eqMac on macOS and import the file";
   statusExport.className = "status done";
-  updateStepIndicator(3, "completed");
 });
 
 window.addEventListener("resize", resizeCanvases);
