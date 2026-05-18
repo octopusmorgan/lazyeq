@@ -269,8 +269,12 @@ micSelect.addEventListener("change", () => {
 // ─── Remote Mic Integration ──────────────────────────────────────────
 
 async function initAnalyzer(ctx) {
-  await analyzer.init(selectedMicDeviceId, ctx);
-  if (import.meta.env.DEV) console.log("[Analyzer] Using LOCAL mic:", selectedMicDeviceId);
+  // Obtain mic stream ONCE with generic constraint (no deviceId) to avoid
+  // the ephemeral-deviceId issue: IDs from enumerateDevices() before
+  // permission is granted become invalid after getUserMedia() is called.
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  await analyzer.init(stream, ctx);
+  if (import.meta.env.DEV) console.log("[Analyzer] Using LOCAL mic stream:", stream.id);
   // Permission granted — refresh device list to get proper labels
   await loadDevices();
 }
