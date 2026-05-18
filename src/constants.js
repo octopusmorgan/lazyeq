@@ -82,3 +82,6 @@ export const CALIBRATION_DEBUG_INTERVAL_MS = 500;
 export const CALIBRATION_DEBUG_KEY_FREQS = Object.freeze([
   63, 125, 250, 500, 1000, 2000, 4000, 8000, 10000, 16000,
 ]);
+
+// Legacy 8-band EQ frequencies (used by _processMeasurementResults per-band smart correction)
+export const ACTIVE_EQ_FREQS = Object.freeze([63, 125, 250, 500, 1000, 2000, 4000, 8000]);

@@ -14,7 +14,7 @@ import {
   getHarmanTargetDB,
 } from "./eqGenerator.js";
 import { saveProfile, loadProfile, float32ToArray } from "./persistence.js";
-import { MEASUREMENT_INTERVAL_MS, CALIBRATION_TIMEOUT_MS, USE_SMART_CORRECTION, FFT_SIZE } from "./constants.js";
+import { MEASUREMENT_INTERVAL_MS, CALIBRATION_TIMEOUT_MS, USE_SMART_CORRECTION, FFT_SIZE, ACTIVE_EQ_FREQS } from "./constants.js";
 import { CalibrationOrchestrator } from './CalibrationOrchestrator.js';
 
 /**
@@ -56,6 +56,7 @@ let legacyAnimationFrame = null; // Track legacy sweep animation frame for clean
 /** @type {CalibrationOrchestrator|null} */
 let orchestrator = null;
 let cachedTargetCurve = null; // Pre-computed target curve for live canvas
+let liveSpectrum = null; // Legacy sweep result spectrum, passed to showResults
 
 // DOM Elements — Active elements present in index.html
 const btnExportWavelet = document.getElementById("btn-export-wavelet");
