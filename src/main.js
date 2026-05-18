@@ -600,10 +600,11 @@ function renderLiveCalibration(timestamp, final = false) {
     drawLine(cachedTargetCurve, "#6a6a7a", true, 0.4);
   }
 
-  // Line 2: Pink noise spectrum (updating, coral)
-  if (state.liveSpectrum && analyzer) {
-    const spectrumPoints = generateVisualizationData(state.liveSpectrum, analyzer.getLinearFrequencyLabels());
-    drawLine(spectrumPoints, "#ff6b6b");
+  // Line 2: Room response (updating, coral)
+  // Uses normalized data (centered around 0 dB) so it shares the
+  // same -15..+15 dB Y-axis as the target and estimated curves.
+  if (state.liveVisData && state.liveVisData.length > 0) {
+    drawLine(state.liveVisData, "#ff6b6b");
   }
 
   // Line 3: Estimated response after EQ (room + correction, cyan)
