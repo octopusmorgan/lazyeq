@@ -24,6 +24,7 @@ import {
 } from './constants.js';
 import { runSmartCorrectionPipeline } from './smartCorrectionPipeline.js';
 import { logCalibrationWindow, enableCalibrationLog, logCalibrationError, logCalibrationConverged, isCalibrationDebugEnabled } from './calibrationDebugLog.js';
+import { CalibrationOrchestrator } from './CalibrationOrchestrator.js';
 
 /**
  * Convert hex color to RGBA string
@@ -131,6 +132,9 @@ const sweepCountSelectEl = sweepCountAdvanced;
 const cardResults = resultsSection;
 
 let resultsReady = false;
+
+/** @type {CalibrationOrchestrator|null} */
+let orchestrator = null;
 
 // Hide results section until first measurement completes
 if (resultsSection) resultsSection.classList.add("hidden");
@@ -1858,15 +1862,70 @@ if (window.ResizeObserver) {
 
 // ─── Live Calibration Event Wiring ────────────────────────────────────
 
+/** Build orchestrator with current module state. Called lazily on first use. */
+function createOrchestrator() {
+  if (orchestrator) return orchestrator;
+  orchestrator = new CalibrationOrchestrator({
+    analyzer,
+    audioContext,
+    processMeasurement: _processMeasurementResults,
+    onStatusChange: ({ text, className }) => {
+      if (statusCalibration) {
+        statusCalibration.textContent = text;
+        statusCalibration.className = className;
+      }
+    },
+    onProgress: ({ text }) => {
+      if (calibrationDelta) calibrationDelta.textContent = text;
+    },
+    onComplete: (result, options) => {
+      showResults(result, options);
+      renderLiveCalibrationFinal();
+    },
+  });
+  return orchestrator;
+}
+
 if (btnCalibrate) {
-  btnCalibrate.addEventListener("click", () => {
-    startLiveCalibration();
+  btnCalibrate.addEventListener("click", async () => {
+    // UI toggles
+    if (btnCalibrate) btnCalibrate.classList.add("hidden");
+    if (btnStopCalibration) btnStopCalibration.classList.remove("hidden");
+    if (calibrationDelta) calibrationDelta.classList.remove("hidden");
+    if (resultsSection) resultsSection.classList.add("hidden");
+
+    // Ensure audio context and analyzer
+    const ctx = initAudioContext();
+    if (!analyzer) analyzer = new SpectrumAnalyzer();
+    await initAnalyzer(ctx);
+
+    // Pre-compute target curve for canvas rendering
+    computeTargetCurveCache();
+
+    // Create orchestrator (now analyzer + audioContext are live)
+    const orch = createOrchestrator();
+    orch.start();
+
+    // Start canvas render loop
+    animationFrame = requestAnimationFrame(renderLiveCalibration);
   });
 }
 
 if (btnStopCalibration) {
   btnStopCalibration.addEventListener("click", () => {
-    stopCalibration();
+    // Stop orchestrator
+    if (orchestrator) orchestrator.stop();
+
+    // Clean up animation frame
+    if (animationFrame) {
+      cancelAnimationFrame(animationFrame);
+      animationFrame = null;
+    }
+
+    // UI toggles
+    if (btnCalibrate) btnCalibrate.classList.remove("hidden");
+    if (btnStopCalibration) btnStopCalibration.classList.add("hidden");
+    if (calibrationDelta) calibrationDelta.classList.add("hidden");
   });
 }
 
