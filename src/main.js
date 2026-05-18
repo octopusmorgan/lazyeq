@@ -5,7 +5,7 @@
 
 import { SineSweepSource } from "./sineSweep.js";
 import { SpectrumAnalyzer } from "./analyzer.js";
-import { SAMPLE_RATE, FFT_SIZE } from "./constants.js";
+import { SAMPLE_RATE, FFT_SIZE, MEASUREMENT_INTERVAL_MS, CALIBRATION_TIMEOUT_MS, USE_SMART_CORRECTION, ACTIVE_EQ_FREQS } from "./constants.js";
 import {
   exportWavelet,
   exportEqMac,
@@ -14,7 +14,6 @@ import {
   getHarmanTargetDB,
 } from "./eqGenerator.js";
 import { saveProfile, loadProfile, float32ToArray } from "./persistence.js";
-import { MEASUREMENT_INTERVAL_MS, CALIBRATION_TIMEOUT_MS, USE_SMART_CORRECTION, FFT_SIZE, ACTIVE_EQ_FREQS } from "./constants.js";
 import { CalibrationOrchestrator } from './CalibrationOrchestrator.js';
 import { hexToRgba, renderSpectrum, renderEQCurve, adaptiveSmooth } from './rendering.js';
 import { LegacySweepOrchestrator } from './LegacySweepOrchestrator.js';
@@ -68,9 +67,6 @@ const sweepCountSelectEl = sweepCountAdvanced;
 const cardResults = resultsSection;
 
 let resultsReady = false;
-
-/** @type {CalibrationOrchestrator|null} */
-let orchestrator = null;
 
 // Hide results section until first measurement completes
 if (resultsSection) resultsSection.classList.add("hidden");
