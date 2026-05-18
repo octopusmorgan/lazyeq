@@ -381,4 +381,152 @@ describe('CalibrationOrchestrator — Commit 2 (+_onMeasurement)', () => {
       assert.equal(inst.getState().running, true);
     });
   });
+
+  // ── _finish() — Convergence/Timeout ────────────────────────────────────
+
+  describe('_finish()', () => {
+    test('clears watchdog timeout', () => {
+      const inst = createInst(buildFullDeps());
+      inst.start();
+      const tid = inst._calibrationTimeout;
+      inst._finish({ visData: [], gains: [] });
+      assert.equal(inst._calibrationTimeout, null);
+    });
+
+    test('stops pink noise and measurement', () => {
+      const inst = createInst(buildFullDeps());
+      inst.start();
+      inst._finish({ visData: [], gains: [] });
+      assert.equal(inst._pinkNoise, null);
+      assert.equal(inst._continuousMeasurement, null);
+    });
+
+    test('sets calibrationRunning to false', () => {
+      const inst = createInst(buildFullDeps());
+      inst.start();
+      inst._finish({ visData: [], gains: [] });
+      assert.equal(inst.isRunning(), false);
+    });
+
+    test('calls onComplete with result', () => {
+      let called = false;
+      const deps = { ...buildFullDeps(), onComplete: () => { called = true; } };
+      const inst = createInst(deps);
+      inst._cumulativeEQGains = new Float32Array(8);
+      inst._finish({ visData: [{ x: 100, y: -20 }], gains: [1] });
+      assert.ok(called);
+    });
+
+    test('calls onComplete with timedOut and rolledBack flags', () => {
+      let opts = null;
+      const deps = { ...buildFullDeps(), onComplete: (r, o) => { opts = o; } };
+      const inst = createInst(deps);
+      inst._cumulativeEQGains = new Float32Array(8);
+      inst._finish({ visData: [], gains: [] }, { timedOut: true });
+      assert.equal(opts.timedOut, true);
+    });
+
+    test('emits onStatusChange with completion message', () => {
+      let msg = '';
+      const deps = { ...buildFullDeps(), onStatusChange: ({ text }) => { msg = text; } };
+      const inst = createInst(deps);
+      inst._cumulativeEQGains = new Float32Array(8);
+      inst._finish({ visData: [], gains: [] });
+      assert.ok(msg.includes('complete'));
+    });
+
+    test('emits onStatusChange with timed out message', () => {
+      let msg = '';
+      const deps = { ...buildFullDeps(), onStatusChange: ({ text }) => { msg = text; } };
+      const inst = createInst(deps);
+      inst._cumulativeEQGains = new Float32Array(8);
+      inst._finish({ visData: [], gains: [] }, { timedOut: true });
+      assert.ok(msg.includes('timed out'));
+    });
+  });
+
+  // ── stop() — Manual Termination ────────────────────────────────────────
+
+  describe('stop()', () => {
+    test('clears watchdog timeout', () => {
+      const inst = createInst(buildFullDeps());
+      inst.start();
+      inst.stop();
+      assert.equal(inst._calibrationTimeout, null);
+    });
+
+    test('stops pink noise and measurement', () => {
+      const inst = createInst(buildFullDeps());
+      inst.start();
+      inst.stop();
+      assert.equal(inst._pinkNoise, null);
+      assert.equal(inst._continuousMeasurement, null);
+    });
+
+    test('sets calibrationRunning to false', () => {
+      const inst = createInst(buildFullDeps());
+      inst.start();
+      inst.stop();
+      assert.equal(inst.isRunning(), false);
+    });
+
+    test('resets all state fields', () => {
+      const inst = createInst(buildFullDeps());
+      inst.start();
+      inst.stop();
+      assert.equal(inst._activeEQFilters, null);
+      assert.equal(inst._cumulativeEQGains, null);
+      assert.equal(inst._perBandMaxGain, null);
+    });
+
+    test('is idempotent — does not throw on double call', () => {
+      const inst = createInst(buildFullDeps());
+      inst.start();
+      inst.stop();
+      inst.stop(); // second call
+    });
+
+    test('works when not started (no crash)', () => {
+      const inst = createInst(buildFullDeps());
+      inst.stop();
+      assert.equal(inst.isRunning(), false);
+    });
+
+    test('calls onStatusChange with stopped message when no partial data', () => {
+      let msg = '';
+      const deps = { ...buildFullDeps(), onStatusChange: ({ text }) => { msg = text; } };
+      const inst = createInst(deps);
+      inst.start();
+      inst.stop();
+      assert.ok(msg.includes('Calibration stopped'));
+    });
+
+    test('calls onComplete with partial result when ≥2 windows', () => {
+      let called = false;
+      const deps = { ...buildFullDeps(), onComplete: () => { called = true; } };
+      const inst = createInst(deps);
+      inst.start();
+      inst._lastMeasurementResult = { visData: [{ x: 100, y: -20 }], normalizedResponse: new Float32Array([-20]), rangeAvg: -10 };
+      inst._cumulativeEQGains = new Float32Array(8);
+      inst._convergenceDetector = new MockConvergenceDetector();
+      inst._convergenceDetector.push(new Float32Array(8));
+      inst._convergenceDetector.push(new Float32Array(8));
+      inst.stop();
+      assert.ok(called);
+    });
+
+    test('calls onStatusChange with partial measurement message when ≥2 windows', () => {
+      let msg = '';
+      const deps = { ...buildFullDeps(), onComplete: () => {}, onStatusChange: ({ text }) => { msg = text; } };
+      const inst = createInst(deps);
+      inst.start();
+      inst._lastMeasurementResult = { visData: [{ x: 100, y: -20 }], normalizedResponse: new Float32Array([-20]), rangeAvg: -10 };
+      inst._cumulativeEQGains = new Float32Array(8);
+      inst._convergenceDetector = new MockConvergenceDetector();
+      inst._convergenceDetector.push(new Float32Array(8));
+      inst._convergenceDetector.push(new Float32Array(8));
+      inst.stop();
+      assert.ok(msg.includes('stopped early'));
+    });
+  });
 });
