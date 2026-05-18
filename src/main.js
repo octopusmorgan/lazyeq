@@ -17,18 +17,14 @@ import { saveProfile, loadProfile, float32ToArray } from "./persistence.js";
 import { MEASUREMENT_INTERVAL_MS, CALIBRATION_TIMEOUT_MS, USE_SMART_CORRECTION, FFT_SIZE, ACTIVE_EQ_FREQS } from "./constants.js";
 import { CalibrationOrchestrator } from './CalibrationOrchestrator.js';
 import { hexToRgba, renderSpectrum, renderEQCurve, adaptiveSmooth } from './rendering.js';
+import { LegacySweepOrchestrator } from './LegacySweepOrchestrator.js';
 
 let analyzer = null;
-let sweepSource = null;
-
 let animationFrame = null;
-let frameCount = 0;
-let accumulatedSpectrum = null;
 let sweepDuration = 8;
 let selectedMicDeviceId = null;
 let sweepProcessing = false;
 let sweepProcessTimeout = null;
-let legacyAnimationFrame = null; // Track legacy sweep animation frame for cleanup
 
 /** @type {CalibrationOrchestrator|null} */
 let orchestrator = null;
@@ -879,7 +875,6 @@ if (btnLegacySweep) {
         await loadDevices();
       }
 
-
       const ctx = initAudioContext();
       if (!analyzer) analyzer = new SpectrumAnalyzer();
       await initAnalyzer(ctx);
@@ -898,184 +893,43 @@ if (btnLegacySweep) {
       statusLegacySweep.textContent = `Running ${sweepCount} sweep(s) for averaging...`;
       statusLegacySweep.className = "status recording";
 
-      const allSpectra = [];
-
-      for (let sweepNum = 0; sweepNum < sweepCount; sweepNum++) {
-        // Reset accumulation for each sweep
-        accumulatedSpectrum = null;
-        frameCount = 0;
-
-        statusLegacySweep.textContent = `Sweep ${sweepNum + 1} of ${sweepCount}...`;
-
-        // Use a separate SineSweepSource for legacy sweep
-        const legacySweep = new SineSweepSource(ctx);
-        legacySweep.createBuffer(sweepDuration);
-
-        // Wait for this sweep to complete
-        await new Promise((resolve) => {
-          sweepSource = legacySweep;
-
-          legacySweep.onComplete = async () => {
-            // Apply 1/f compensation to the accumulated peak-hold spectrum
-            const f0 = 20;
-            const sr = analyzer.audioContext.sampleRate;
-            const fftSz = analyzer.analyserNode.fftSize;
-            const bw = sr / fftSz;
-
-            const compensatedSpectrum = new Float32Array(accumulatedSpectrum.length);
-            const n = Math.max(frameCount, 1);
-            for (let i = 0; i < accumulatedSpectrum.length; i++) {
-              const avgDb = accumulatedSpectrum[i] / n;
-              const freq = i * bw;
-              compensatedSpectrum[i] = freq > f0
-                ? avgDb + 10 * Math.log10(freq / f0)
-                : avgDb;
-            }
-
-            allSpectra.push(compensatedSpectrum);
-            accumulatedSpectrum = null;
-            frameCount = 0;
-            sweepSource = null;
-            stopLegacySweepRendering(); // Clean up animation frame
-            resolve();
-          };
-
-          legacySweep.start();
-
-          // Render on legacy canvas
-          renderLiveSweepOnCanvas(canvasLiveLegacy);
-        });
-
-        // Brief pause between sweeps
-        if (sweepNum < sweepCount - 1) {
-          await new Promise(r => setTimeout(r, 500));
-        }
-      }
-
-      // All sweeps done — average the compensated spectra
-      statusLegacySweep.textContent = `Averaging ${sweepCount} sweeps...`;
-      statusLegacySweep.className = "status info";
-
-      const averaged = new Float32Array(allSpectra[0].length);
-      for (let i = 0; i < averaged.length; i++) {
-        let sum = 0;
-        for (const spectrum of allSpectra) {
-          sum += spectrum[i];
-        }
-        averaged[i] = sum / allSpectra.length;
-      }
-
-      accumulatedSpectrum = averaged;
-      frameCount = 100;
-
-      // Process results using the same pipeline
-      const corrected = analyzer.getCorrectedSpectrumFromDB(averaged);
-      const result = _processMeasurementResults(corrected, {
-        method: 'sweep',
-        gainLimits: { maxGain: 4, maxCut: -4, bassMax: 4 },
-        smoothingFactor: 2.5,
-        effectiveRange: { low: 100, high: 8000 }
+      // Create orchestrator instance with DI
+      const liveCanvasCtx = canvasLiveLegacy?.getContext("2d");
+      const orchestrator = new LegacySweepOrchestrator({
+        analyzer,
+        audioContext: ctx,
+        processMeasurement: _processMeasurementResults,
+        onStatusChange: ({ text, className }) => {
+          if (statusLegacySweep) {
+            statusLegacySweep.textContent = text;
+            statusLegacySweep.className = className;
+          }
+        },
+        onComplete: (result, options) => {
+          if (result) {
+            liveSpectrum = options.spectrum;
+            showResults(result);
+          }
+          btnLegacySweep.disabled = false;
+        },
+        renderFrame: (spectrum) => {
+          if (liveCanvasCtx && canvasLiveLegacy) {
+            renderSpectrum(liveCanvasCtx, spectrum);
+          }
+        },
       });
 
-      // Show results using the shared function
-      liveSpectrum = corrected;
-      showResults(result);
-
-      statusLegacySweep.textContent = "Legacy sweep complete! EQ curve ready to export.";
-      statusLegacySweep.className = "status done";
-      btnLegacySweep.disabled = false;
+      await orchestrator.run(sweepCount);
 
     } catch (err) {
       console.error(err);
-      statusLegacySweep.textContent = "Legacy sweep failed: " + err.message;
-      statusLegacySweep.className = "status danger";
+      if (statusLegacySweep) {
+        statusLegacySweep.textContent = "Legacy sweep failed: " + err.message;
+        statusLegacySweep.className = "status danger";
+      }
       btnLegacySweep.disabled = false;
     }
   });
-}
-
-/**
- * Render live sweep on a specific canvas (used by legacy sweep).
- * @param {HTMLCanvasElement} canvas
- */
-function renderLiveSweepOnCanvas(canvas) {
-  if (!canvas || !analyzer) return;
-  const ctx = canvas.getContext("2d");
-  const dpr = window.devicePixelRatio || 1;
-  const width = canvas.width / dpr;
-  const height = canvas.height / dpr;
-
-  const data = analyzer.getCurrentSpectrum();
-  if (!data) {
-    legacyAnimationFrame = requestAnimationFrame(() => renderLiveSweepOnCanvas(canvas));
-    return;
-  }
-
-  // Accumulate spectrum data for post-sweep processing
-  if (!accumulatedSpectrum) {
-    accumulatedSpectrum = new Float32Array(data.length);
-  }
-  for (let i = 0; i < data.length; i++) {
-    accumulatedSpectrum[i] += data[i];
-  }
-  frameCount++;
-
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-  ctx.fillRect(0, 0, width, height);
-
-  // Grid
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
-  ctx.lineWidth = 1;
-  for (let g = 0; g <= 4; g++) {
-    ctx.beginPath();
-    ctx.moveTo(0, (g / 4) * height);
-    ctx.lineTo(width, (g / 4) * height);
-    ctx.stroke();
-  }
-
-  // Draw spectrum
-  const logMin = Math.log10(20);
-  const logMax = Math.log10(20000);
-  const gradient = ctx.createLinearGradient(0, 0, width, 0);
-  gradient.addColorStop(0, "#00f5d4");
-  gradient.addColorStop(0.5, "#00f5d4");
-  gradient.addColorStop(1, "#ffc857");
-
-  ctx.save();
-  ctx.shadowColor = "#00f5d4";
-  ctx.shadowBlur = 12;
-  ctx.strokeStyle = gradient;
-  ctx.lineWidth = 2;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.beginPath();
-  for (let i = 0; i < 128; i++) {
-    const logFreq = logMin + (i / 128) * (logMax - logMin);
-    const freq = Math.pow(10, logFreq);
-    const binIdx = Math.floor((freq / (analyzer.audioContext.sampleRate / 2)) * data.length);
-    const x = (i / 128) * width;
-    const db = data[Math.min(binIdx, data.length - 1)];
-    const y = Math.max(0, Math.min(height, ((db + 100) / 100) * height));
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-  ctx.restore();
-
-  // Continue rendering while sweep is active, with proper tracking
-  if (sweepSource) {
-    legacyAnimationFrame = requestAnimationFrame(() => renderLiveSweepOnCanvas(canvas));
-  }
-}
-
-/**
- * Stop legacy sweep rendering and clean up animation frame.
- */
-function stopLegacySweepRendering() {
-  if (legacyAnimationFrame) {
-    cancelAnimationFrame(legacyAnimationFrame);
-    legacyAnimationFrame = null;
-  }
 }
 
 // ─── End Legacy Sine Sweep ────────────────────────────────────────────
