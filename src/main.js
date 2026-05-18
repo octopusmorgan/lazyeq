@@ -1034,10 +1034,46 @@ if (btnCalibrate) {
     if (calibrationDelta) calibrationDelta.classList.remove("hidden");
     if (resultsSection) resultsSection.classList.add("hidden");
 
-    // Ensure audio context and analyzer
+    // ── Check if mic permission was previously blocked (Chrome remembers) ──
+    try {
+      if (navigator.permissions) {
+        const micPerm = await navigator.permissions.query({ name: "microphone" });
+        if (micPerm.state === "denied") {
+          statusCalibration.textContent = "Microphone access was blocked for this site. Click the lock icon in the address bar, change it to 'Allow', and try again.";
+          statusCalibration.className = "status danger";
+          if (btnCalibrate) btnCalibrate.classList.remove("hidden");
+          if (btnStopCalibration) btnStopCalibration.classList.add("hidden");
+          if (calibrationDelta) calibrationDelta.classList.add("hidden");
+          return;
+        }
+      }
+    } catch (_) { /* Permissions API not available or query failed — proceed anyway */ }
+
+    // ── Obtain mic stream ONCE with generic constraint ──
+    // We use getUserMedia({audio:true}) (no deviceId) to avoid the
+    // ephemeral-deviceId issue: IDs from enumerateDevices() before
+    // permission is granted become invalid after getUserMedia() is called.
     const ctx = initAudioContext();
     if (!analyzer) analyzer = new SpectrumAnalyzer();
-    await initAnalyzer(ctx);
+    try {
+      const localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Re-enumerate now that we have permission — gets real device labels
+      await loadDevices();
+      // Pass the pre-obtained stream directly — no second getUserMedia call
+      await analyzer.init(localMicStream, ctx);
+    } catch (permErr) {
+      if (permErr.name === "NotAllowedError") {
+        statusCalibration.textContent = "Microphone access denied. Allow mic access in your browser and try again.";
+        statusCalibration.className = "status danger";
+      } else {
+        statusCalibration.textContent = "Microphone error — " + (permErr.message || "check console") + ". Try refreshing the page.";
+        statusCalibration.className = "status danger";
+      }
+      if (btnCalibrate) btnCalibrate.classList.remove("hidden");
+      if (btnStopCalibration) btnStopCalibration.classList.add("hidden");
+      if (calibrationDelta) calibrationDelta.classList.add("hidden");
+      return;
+    }
 
     // Pre-compute target curve for canvas rendering
     computeTargetCurveCache();
