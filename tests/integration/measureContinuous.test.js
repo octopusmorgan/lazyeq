@@ -27,6 +27,8 @@ import { FFT_SIZE } from '../../src/constants.js';
 describe('SpectrumAnalyzer.measureContinuous — mutex', () => {
   test('throws if called while already measuring', () => {
     const analyzer = new SpectrumAnalyzer();
+    // Mark as initialized so mutex check is reached before init guard
+    analyzer.analyserNode = {};
     // Simulate active measurement by setting the flag directly
     analyzer._measuring = true;
 
@@ -38,6 +40,8 @@ describe('SpectrumAnalyzer.measureContinuous — mutex', () => {
 
   test('recordSegment throws if continuous measurement is active', async () => {
     const analyzer = new SpectrumAnalyzer();
+    // Mark as initialized so mutex check is reached before init guard
+    analyzer.analyserNode = {};
     analyzer._measuring = true;
 
     await assert.rejects(

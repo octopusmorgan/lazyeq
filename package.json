@@ -13,7 +13,7 @@
     "signaling:wss": "CERT=1 node server/signaling.js",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test tests/*.test.js",
+    "test": "node --test \"tests/**/*.test.js\"",
     "test:dist": "node test.js",
     "build:test": "vite build && node --test tests/*.test.js && node test.js"
   },
