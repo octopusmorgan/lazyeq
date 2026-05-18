@@ -1,7 +1,18 @@
 # lazyEq
 
 **Room EQ that learns your room in under a minute.**  
-Plays pink noise through your speakers, captures the response with your phone's mic via WebRTC, and generates a correction curve — all in the browser. No install, no cables.
+Plays pink noise through your speakers, measures the room response with your device's microphone, and generates a correction curve — all in the browser. No install, no cables.
+
+## How It Works
+
+**One device does everything** — The device where you open the app:
+1. Plays pink noise through its speakers
+2. Captures the room response with its microphone
+3. Computes and displays the EQ correction in real-time
+
+That's it — no cables, no second device needed. Open the app, tap **Calibrate**, and export your profile when done.
+
+> **Network access** is only needed if you want to develop/debug on a separate device (e.g., run dev server on PC, test on phone).
 
 ## Quick Start
 
@@ -10,7 +21,7 @@ npm install
 npm run dev        # → http://localhost:5173
 ```
 
-Open the link on your PC, grant mic access, tap **Start Calibration**. The app plays pink noise and auto-converges to an EQ curve in 10–30 seconds. Export to Wavelet (Android) or eqMac (macOS) when done.
+Open the link, grant microphone permission, tap **Start Calibration**. The app plays pink noise through your speakers and captures the room response with your mic. Auto-converges to an EQ curve in 10–30 seconds. Export to Wavelet (Android) or eqMac (macOS) when done.
 
 ## Two Calibration Paths
 
@@ -39,37 +50,43 @@ The correction updates in real time: you can hear the EQ shaping as the system c
 
 The sweep section is in a collapsible **Advanced** panel below the main Auto-EQ card.
 
-## Remote Mic Setup
+## Network Access (Development/Debug Only)
 
-Use your phone as a wireless measurement microphone — no cables needed.
+By default, `npm run dev` serves HTTP on localhost. Network access is useful only for development — e.g., running the dev server on your PC and testing on a phone/tablet.
 
-### How it works
+**Normal use**: Open the app on the device you'll use for calibration, that's it.
 
-1. On your PC, tap **Use Remote Mic**
-2. A QR code appears — scan it with your phone
-3. Enter the 4-digit room code
-4. Place the phone at ear height, 2–3 m from the speaker
+> The MediaDevices API requires a secure context (HTTPS or localhost) when accessing via network URL.
 
-The phone streams audio to the PC via WebRTC. The PC plays the test signal through your speakers.
-
-### Network Options
-
-| Mode | Setup | Signaling |
-|------|-------|-----------|
-| **LAN** (same Wi-Fi) | `npm run signaling` | Auto-detected via mkcert or local IP |
-| **Tunnel** (remote) | ngrok / loca.lt with HTTPS | Vite's `/signaling` proxy |
-| **HTTPS** (local) | `npm run dev:https` + mkcert certs | Vite proxy, no port 3001 needed |
-
-For HTTPS setup (required for Chrome on phones):
+### Quick Setup (one-time)
 
 ```bash
+# Install mkcert for local HTTPS certificates
 brew install mkcert
 mkcert -install
+
+# Generate certificates for your network IP
 mkcert 192.168.x.x localhost 127.0.0.1
-mv 192.168.x.x+localhost+127.0.0.1.pem cert.pem
-mv 192.168.x.x+localhost+127.0.0.1-key.pem cert-key.pem
+
+# Rename for Vite (it auto-detects these files)
+mv 192.168.x.x+2.pem cert.pem
+mv 192.168.x.x+2-key.pem cert-key.pem
+
+# Now run dev — it will serve HTTPS automatically
 npm run dev
 ```
+
+You'll see:
+```
+➜  Local:   https://localhost:5173/
+➜  Network: https://192.168.68.101:5173/
+```
+
+On your phone, open: `https://192.168.68.101:5173/`
+
+### Why HTTPS is required
+
+Chrome, Edge, Brave, and Safari require a **secure context** (HTTPS or localhost) to grant microphone access. This is a browser security policy — the API simply won't work over plain HTTP on a network URL.
 
 ## Features
 
@@ -80,7 +97,7 @@ npm run dev
 - **Logarithmic sine sweep** — 20 Hz to 16 kHz in 8 seconds, smooth fade-in/out
 - **1/f spectral compensation** — Corrects the natural energy distribution of log sweeps
 - **Noise floor subtraction** — Power-domain averaging with SNR gating
-- **Phone mic correction** — Generic MEMS microphone curve
+- **Device mic calibration** — Applies generic MEMS microphone correction
 - **Practical EQ limits** — ±4 dB correction, 100 Hz–8 kHz effective range
 - **Export presets** — Wavelet (147-band GraphicEQ) and eqMac (10-band peaking EQ) with preamp normalization
 - **No installation** — Runs entirely in the browser
@@ -89,11 +106,11 @@ npm run dev
 
 | Parameter | Recommendation |
 |-----------|----------------|
-| **Phone position** | At ear height, where you normally listen |
+| **Device position** | At ear height, where you normally listen |
 | **Distance** | 2–3 meters from the speaker |
 | **Volume** | 70–80% — loud but clean, no distortion |
 | **Environment** | Quiet room, minimal background noise |
-| **Browser** | Firefox recommended for best WebRTC support |
+| **Network** | PC plays sound, phone captures via browser (both on same Wi-Fi) |
 
 ## Architecture
 
@@ -107,29 +124,20 @@ src/
 ├── convergence.js         # Rolling window convergence detection for EQ gains
 ├── persistence.js         # Dual-slot localStorage profile save/load with rollback
 ├── constants.js           # Sample rate, FFT size, calibration thresholds
-├── style.css              # Dark theme, glassmorphism, neon accents (1270 lines)
-└── webrtc/
-    ├── remoteMicHost.js   # WebRTC host (PC side)
-    ├── remoteMicClient.js # WebRTC client (phone side)
-    ├── signalingChannel.js# WebSocket signaling abstraction
-    ├── networkDiscovery.js# LAN IP discovery via WebRTC
-    └── qrCode.js          # QR code generation for phone pairing
-
-server/
-└── signaling.js           # WebSocket relay for WebRTC handshake (WS + WSS)
+├── style.css              # Dark theme, glassmorphism, neon accents
+├── candidateDetector.js   # Peak/null detection in frequency response
+├── candidateRanker.js     # Ranking and prioritization of correction targets
+├── parametricEqSynthesizer.js # RBJ biquad filter synthesis for parametric EQ
+└── calibrationDebugLog.js # Debug logging for calibration pipeline
 
 public/
 └── audio-worklet-processor.js  # AudioWorklet for PCM sweep recording
-
-remote-mic.html           # Standalone entry point for phone mic page
 ```
 
 ## Technology Stack
 
-- **Vite 6** — Build tool, dev server with HTTPS, multi-page build, WebSocket proxy
+- **Vite 6** — Build tool, dev server with auto-HTTPS
 - **Web Audio API** — FFT analysis, pink noise, sine sweeps, AudioWorklet, BiquadFilter
-- **WebRTC** — Real-time audio streaming from phone to PC
-- **WebSocket** — Signaling server for WebRTC handshake
 - **Canvas API** — Real-time spectrum visualization with log-frequency rendering
 
 ## Algorithm Details
@@ -181,24 +189,24 @@ Power-domain averaging: dB → linear power → average → back to dB. Noise fl
 
 | Command | Purpose |
 |---------|---------|
-| `npm run dev` | Development server (HTTP) |
-| `npm run dev:https` | Development server (HTTPS, requires certs) |
-| `npm run signaling` | WebSocket signaling server (port 3001) |
-| `npm run signaling:wss` | Secure WebSocket signaling (requires certs) |
-| `npm run build` | Production build (multi-page) |
+| `npm run dev` | Development server (auto-detects HTTPS if certs exist) |
+| `npm run build` | Production build |
 | `npm run preview` | Preview production build |
 | `npm test` | Run test suite |
-| `npm run build:test` | Full build + test in CI mode |
+
+> When `cert.pem` and `cert-key.pem` exist in the project root, Vite automatically serves HTTPS.
 
 ## Browser Support
 
 | Browser | Support |
 |---------|---------|
-| Firefox Android | ✅ Full support |
-| Chrome Android | ✅ Full support (HTTPS only for mic) |
 | Firefox Desktop | ✅ Full support |
 | Chrome Desktop | ✅ Full support |
-| Safari iOS | ⚠️ Limited (WebRTC audio may vary) |
+| Firefox Android | ✅ Full support |
+| Chrome Android | ✅ Full support |
+| Safari iOS | ✅ Full support |
+
+> **Note**: Microphone access requires HTTPS or localhost. Use the HTTPS network URL when accessing from another device.
 
 ## Package Structure
 

@@ -32,6 +32,8 @@ import {
  * @param {Object} [options] - Override constants
  * @param {Float32Array} [options.rawSpectrum] - Pre-smoothing spectrum for confidence
  * @param {Object} [options.effectiveRange] - {low, high} Hz range for candidate detection
+ * @param {number} [options.mergeDivisor] - Auto-merge divisor for octave-proportional distance (default: 6)
+ * @param {Object} [options.debugStats] - Mutable object populated with stage counters
  * @returns {Candidate[]}
  */
 export function detectCandidates(response, target, frequencies, options = {}) {
@@ -54,9 +56,11 @@ export function detectCandidates(response, target, frequencies, options = {}) {
   const peakThreshold = options.peakThreshold ?? PEAK_DETECTION_THRESHOLD;
   const nullThreshold = options.nullThreshold ?? NULL_DETECTION_THRESHOLD;
   const mergeDist = options.mergeDistance ?? MERGE_DISTANCE_HZ;
+  const mergeDivisor = options.mergeDivisor ?? 6;
   const nullRejectionWidth = options.nullRejectionWidth ?? NULL_REJECTION_WIDTH_HZ;
   const rawSpectrum = options.rawSpectrum;
   const effectiveRange = options.effectiveRange ?? EFFECTIVE_RANGE;
+  const debugStats = options.debugStats ?? null;
 
   // Step 1: Compute deviation
   const deviation = new Float32Array(n);
@@ -102,6 +106,10 @@ export function detectCandidates(response, target, frequencies, options = {}) {
     }
   }
 
+  if (debugStats) {
+    debugStats.rawCount = raw.length;
+  }
+
   // Step 3: Measure bandwidth and compute confidence
   const candidates = [];
   for (const c of raw) {
@@ -144,8 +152,16 @@ export function detectCandidates(response, target, frequencies, options = {}) {
     return c.widthHz >= minWidth;
   });
 
+  if (debugStats) {
+    debugStats.afterWidthRejectCount = filtered.length;
+  }
+
   // Step 5: Merge nearby candidates
-  return mergeCandidates(filtered, frequencies, mergeDist);
+  const merged = mergeCandidates(filtered, frequencies, mergeDist, mergeDivisor);
+  if (debugStats) {
+    debugStats.afterMergeCount = merged.length;
+  }
+  return merged;
 }
 
 /**
@@ -185,7 +201,7 @@ function computeConfidence(freq, frequencies, response, rawSpectrum) {
 /**
  * Merge candidates closer than merge distance, keeping higher |deviation|.
  */
-function mergeCandidates(candidates, frequencies, mergeDist) {
+function mergeCandidates(candidates, frequencies, mergeDist, mergeDivisor = 6) {
   if (candidates.length === 0) return [];
 
   // Sort by frequency
@@ -198,7 +214,7 @@ function mergeCandidates(candidates, frequencies, mergeDist) {
 
     // Compute merge distance based on geometric mean frequency
     const geoMean = Math.sqrt(prev.freq * curr.freq);
-    const dist = mergeDist > 0 ? mergeDist : geoMean / 6; // 1/6 octave default
+    const dist = mergeDist > 0 ? mergeDist : geoMean / Math.max(mergeDivisor, 1); // default: 1/6 octave
     const freqDiff = Math.abs(curr.freq - prev.freq);
 
     if (freqDiff <= dist) {

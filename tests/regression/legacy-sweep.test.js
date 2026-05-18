@@ -115,35 +115,34 @@ describe('T013: Legacy Sweep Path Regression', () => {
     });
   });
 
-  describe('1/f compensation preserved in main.js', () => {
-    test('main.js contains 1/f compensation formula', () => {
-      const mainJsPath = join(__dirname, '../../src/main.js');
-      const content = readFileSync(mainJsPath, 'utf-8');
-
-      // The 1/f compensation uses: 10 * Math.log10(freq / f0)
-      assert.ok(
-        content.includes('10 * Math.log10(freq / f0)'),
-        '1/f compensation formula should be present in main.js'
-      );
-    });
-
-    test('processSweepResults function exists', () => {
+  describe('live-only calibration architecture in main.js', () => {
+    test('main.js does not contain removed legacy sweep runner', () => {
       const mainJsPath = join(__dirname, '../../src/main.js');
       const content = readFileSync(mainJsPath, 'utf-8');
 
       assert.ok(
-        content.includes('async function processSweepResults()'),
-        'processSweepResults function should exist in main.js'
+        !content.includes('async function processSweepResults()'),
+        'processSweepResults should be removed from main.js'
       );
     });
 
-    test('_processMeasurementResults function exists', () => {
+    test('main.js keeps live calibration shared helpers and entry points', () => {
       const mainJsPath = join(__dirname, '../../src/main.js');
       const content = readFileSync(mainJsPath, 'utf-8');
 
       assert.ok(
         content.includes('function _processMeasurementResults('),
-        '_processMeasurementResults function should exist in main.js'
+        '_processMeasurementResults should exist in main.js (used by live path)'
+      );
+
+      assert.ok(
+        content.includes('function startLiveCalibration()'),
+        'startLiveCalibration should exist in main.js'
+      );
+
+      assert.ok(
+        content.includes('function stopCalibration('),
+        'stopCalibration should exist in main.js'
       );
     });
 

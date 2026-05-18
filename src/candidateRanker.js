@@ -48,10 +48,11 @@ export function rankCandidates(candidates, options = {}) {
     const narrowness = 1 / Math.max(c.widthHz, 0.1);
     const confidencePenalty = 1 - (c.confidence ?? 0.5);
 
+    // Narrow peaks/nulls should be prioritized (higher 1/width -> higher score).
     let score =
       w.deviation * Math.abs(c.deviationDb) +
       w.stability * stability +
-      w.bandwidth * bandwidthFactor -
+      w.bandwidth * bandwidthFactor +
       w.narrowness * narrowness -
       w.lowConfidence * confidencePenalty;
 

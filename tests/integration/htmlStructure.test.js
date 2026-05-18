@@ -41,18 +41,11 @@ describe('HTML structure — preserved IDs', () => {
     assert.ok(html.includes('id="status-devices"'), 'status-devices should exist');
   });
 
-  test('remote mic panel IDs preserved', () => {
-    assert.ok(html.includes('id="remote-mic-panel"'), 'remote-mic-panel should exist');
-    assert.ok(html.includes('id="remote-mic-server"'), 'remote-mic-server should exist');
-    assert.ok(html.includes('id="remote-mic-public-url"'), 'remote-mic-public-url should exist');
-    assert.ok(html.includes('id="remote-mic-server-hint"'), 'remote-mic-server-hint should exist');
-    assert.ok(html.includes('id="btn-remote-mic"'), 'btn-remote-mic should exist');
-    assert.ok(html.includes('id="remote-mic-status"'), 'remote-mic-status should exist');
-    assert.ok(html.includes('id="remote-mic-connected"'), 'remote-mic-connected should exist');
-    assert.ok(html.includes('id="remote-mic-code"'), 'remote-mic-code should exist');
-    assert.ok(html.includes('id="remote-mic-qr"'), 'remote-mic-qr should exist');
-    assert.ok(html.includes('id="remote-mic-url"'), 'remote-mic-url should exist');
-    assert.ok(html.includes('id="remote-code-digits"'), 'remote-code-digits should exist');
+  test('remote mic panel IDs removed (deprecated)', () => {
+    // Remote Mic feature was deprecated - these IDs should no longer exist
+    assert.ok(!html.includes('id="remote-mic-panel"'), 'remote-mic-panel should be removed');
+    assert.ok(!html.includes('id="remote-mic-server"'), 'remote-mic-server should be removed');
+    assert.ok(!html.includes('id="btn-remote-mic"'), 'btn-remote-mic should be removed');
   });
 
   test('canvas IDs preserved for results rendering', () => {

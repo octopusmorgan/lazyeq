@@ -12,15 +12,8 @@ test("required application files exist", () => {
     "src/sineSweep.js",
     "src/eqGenerator.js",
     "src/style.css",
-    "src/webrtc/signalingChannel.js",
-    "src/webrtc/remoteMicHost.js",
-    "src/webrtc/remoteMicClient.js",
-    "src/webrtc/networkDiscovery.js",
-    "src/webrtc/qrCode.js",
-    "server/signaling.js",
     "public/audio-worklet-processor.js",
     "index.html",
-    "remote-mic.html",
     "vite.config.js",
   ];
   for (const file of required) {
@@ -33,7 +26,7 @@ test("main entrypoint uses local modules (not package aliases)", () => {
   assert.ok(main.includes("./sineSweep.js"));
   assert.ok(main.includes("./analyzer.js"));
   assert.ok(main.includes("./eqGenerator.js"));
-  assert.ok(main.includes("./webrtc/remoteMicHost.js"));
+  assert.ok(!main.includes("./webrtc/remoteMicHost.js"));
   assert.ok(!main.includes("@acoustic-forge/"));
 });
 
@@ -42,8 +35,9 @@ test("index.html references src/main.js", () => {
   assert.ok(html.includes('src="./src/main.js"'));
 });
 
-test("vite config keeps signaling proxy and remote mic entry", () => {
+test("vite config uses single-page entry without signaling proxy", () => {
   const viteConfig = readFileSync("vite.config.js", "utf-8");
-  assert.ok(viteConfig.includes("'/signaling'"));
-  assert.ok(viteConfig.includes("remote-mic.html"));
+  assert.ok(!viteConfig.includes("'/signaling'"));
+  assert.ok(!viteConfig.includes("remote-mic.html"));
+  assert.ok(viteConfig.includes("index.html"));
 });

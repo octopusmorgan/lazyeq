@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>lazyEq — Perfect Sound, Personalized</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230c0c14'/%3E%3Cpath fill='%2300f5d4' d='M6 22c4-10 8-14 20-14v4c-10 0-14 4-18 12z'/%3E%3C/svg%3E">
-  <script type="module" crossorigin src="/assets/index-CDqF3SVf.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-DlTv1ZSW.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <script type="module" crossorigin src="/assets/main-D-FLuH4k.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/main-DivdVD5k.css">
 </head>
 <body>
   <div id="app">
@@ -16,112 +19,124 @@
       <p class="subtitle">Sound tailored to your room</p>
     </header>
 
-    <main>
-      <!-- Step 0: Device Selection -->
-      <section id="step-devices" class="card">
-        <div class="card-header">
-          <span class="step-indicator">1</span>
-          <h2>Microphone Setup</h2>
-        </div>
-        
-        <div class="device-row">
-          <label>🎤 Mic</label>
-          <select id="mic-select">
-            <option value="">Loading devices...</option>
-          </select>
-        </div>
-        
-        <button id="btn-refresh-devices" class="btn-secondary" style="width: 100%;">
-          ↻ Refresh Devices
-        </button>
-        <p id="status-devices" class="status"></p>
+    <main class="app-main">
+      <!-- Calibration Layout: Controls + Live Canvas -->
+      <section class="calibration-layout">
+        <!-- Left: Calibration Controls Card -->
+        <section id="calibration-card" class="card calibration-card">
+          <div class="card-header">
+            <h2>lazyEq — Room Calibration</h2>
+          </div>
+
+          <!-- Collapsible Mic Setup -->
+          <details id="mic-setup-section">
+            <summary class="details-summary">Microphone Setup</summary>
+            <div class="details-content setup-panel">
+              <div class="device-row">
+                <label>🎤 Mic</label>
+                <select id="mic-select">
+                  <option value="">Loading devices...</option>
+                </select>
+              </div>
+
+              <button id="btn-refresh-devices" class="btn-secondary btn-block mb-4">
+                ↻ Refresh Devices
+              </button>
+              <p id="status-devices" class="status"></p>
+            </div>
+          </details>
+
+          <!-- Calibration Controls -->
+          <div class="calibration-controls control-panel">
+            <button id="btn-calibrate" class="btn-primary btn-calibrate">
+              ▶ Calibrate
+            </button>
+            <button id="btn-stop-calibration" class="btn-stop btn-stop-calibration hidden">
+              ⏹ Stop
+            </button>
+          </div>
+
+          <!-- Status Messages -->
+          <p id="status-calibration" class="status"></p>
+
+          <!-- Advanced Section (collapsed, reserved for Phase 3 legacy sweep) -->
+          <details id="advanced-section" class="advanced-section">
+            <summary class="details-summary">Advanced</summary>
+            <div class="details-content">
+              <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;">
+                Use the classic 8-second sine sweep for maximum precision.
+              </p>
+              <div class="controls-row">
+                <button id="btn-legacy-sweep" class="btn-secondary">▶ Legacy Sine Sweep (8s)</button>
+              </div>
+              <label for="sweep-count-advanced" style="font-size:0.75rem;color:#6a6a7a;margin-top:0.5rem;display:block;">
+                Averages:
+                <select id="sweep-count-advanced" style="width:auto;display:inline;margin-left:0.5rem;">
+                  <option value="1">1 (fast)</option>
+                  <option value="2" selected>2 (recommended)</option>
+                  <option value="3">3 (best)</option>
+                </select>
+              </label>
+              <p id="status-legacy-sweep" class="status"></p>
+              <canvas id="canvas-live-legacy" width="800" height="130" style="margin-top:0.5rem;"></canvas>
+            </div>
+          </details>
+        </section>
+
+        <!-- Right: Live Analysis Card -->
+        <section class="card live-card">
+          <div class="card-header">
+            <h2>Live Analysis</h2>
+          </div>
+          <canvas id="canvas-live" class="canvas-live" width="800" height="300"></canvas>
+          <div id="calibration-delta" class="calibration-delta hidden">
+            Δ -- dB
+          </div>
+        </section>
       </section>
 
-      <!-- Step 1: Noise Measurement -->
-      <section id="step-noise" class="card">
-        <div class="card-header">
-          <span class="step-indicator">2</span>
-          <h2>Ambient Noise</h2>
+      <!-- Results Section (full width, hidden until calibration completes) -->
+      <section id="results-section" class="card results-section hidden results-panel">
+        <div class="separator results-separator">
+          <span style="flex:1;height:1px;background:rgba(255,255,255,0.06);"></span>
+          Results
+          <span style="flex:1;height:1px;background:rgba(255,255,255,0.06);"></span>
         </div>
-        <p>Keep quiet for 5 seconds while we measure background noise.</p>
-        <button id="btn-noise" class="btn-primary" style="width: 100%;">
-          Start Calibration
-        </button>
-        <p id="status-noise" class="status"></p>
-      </section>
 
-      <!-- Step 2a: Sine Sweep Measurement -->
-      <section id="step-sweep" class="card">
-        <div class="card-header">
-          <span class="step-indicator">3</span>
-          <h2>Frequency Scan</h2>
-        </div>
-        <p>Connect your speaker via Bluetooth. We'll play a sweep (20Hz–20kHz) and capture the response.</p>
-        <div class="controls-row">
-          <button id="btn-sweep" class="btn-primary" disabled>
-            ▶ Play Sweep
-          </button>
-          <button id="btn-stop" class="btn-stop" disabled>
-            ■ Stop
-          </button>
-        </div>
-        <canvas id="canvas-live" class="canvas-live"></canvas>
-        <p id="status-sweep" class="status"></p>
-      </section>
+        <div class="results-grid">
+          <article class="result-card result-card-chart">
+            <canvas id="canvas-spectrum"></canvas>
+            <p class="label">Original response (before EQ)</p>
+          </article>
 
-      <!-- Step 2b: Room Walk Mode -->
-      <section id="step-room-walk" class="card">
-        <div class="card-header">
-          <span class="step-indicator">↻</span>
-          <h2>Room Walk Mode</h2>
-        </div>
-        <p>Walk around your room while we capture 15 measurements for spatial averaging.</p>
-        <button id="btn-roomwalk" class="btn-secondary" style="width: 100%;" disabled>
-          🚶 Measure Multiple Spots
-        </button>
-        <p id="status-room-walk" class="status"></p>
-      </section>
+          <article class="result-card result-card-chart">
+            <canvas id="canvas-estimated"></canvas>
+            <p class="label">With corrections (target: Harman)</p>
+          </article>
 
-      <!-- Step 3: Results -->
-      <section id="step-results" class="card">
-        <div class="card-header">
-          <span class="step-indicator">4</span>
-          <h2>Your Sound Profile</h2>
-        </div>
-        
-        <canvas id="canvas-spectrum"></canvas>
-        <p class="label">Original response (before EQ)</p>
-        
-        <canvas id="canvas-estimated"></canvas>
-        <p class="label">With corrections (target: Harman)</p>
-        
-        <canvas id="canvas-eq"></canvas>
-        <p class="label">EQ adjustments to apply</p>
-        
-        <!-- EQ Table -->
-        <div id="eq-table-container">
-          <h3>EQ Bands</h3>
-          <table id="eq-table">
-            <thead>
-              <tr>
-                <th>Freq</th>
-                <th>Response</th>
-                <th>Gain</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
+          <article class="result-card result-card-chart">
+            <canvas id="canvas-eq"></canvas>
+            <p class="label">EQ adjustments to apply</p>
+          </article>
 
-      <!-- Step 4: Export -->
-      <section id="step-export" class="card">
-        <div class="card-header">
-          <span class="step-indicator">5</span>
-          <h2>Export Preset</h2>
+          <!-- EQ Table -->
+          <article id="eq-table-container" class="result-card result-card-table">
+            <h3>EQ Bands</h3>
+            <table id="eq-table">
+              <thead>
+                <tr>
+                  <th>Freq</th>
+                  <th>Response</th>
+                  <th>Gain</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </article>
         </div>
-        <p>Download your personalized EQ preset.</p>
-        <div class="export-buttons">
+
+        <!-- Export Buttons -->
+        <div class="export-buttons results-export-bar">
           <button id="btn-export-wavelet" class="btn-export" disabled>
             📱 Wavelet
           </button>
@@ -136,21 +151,6 @@
     <footer>
       <p>Tip: Use your phone's microphone — not the speaker's mic. Keep the room quiet.</p>
     </footer>
-  </div>
-
-  <!-- Room Walk Overlay -->
-  <div id="room-walk-overlay" class="overlay hidden">
-    <div class="overlay-content">
-      <h2>🚶 Walk Around</h2>
-      <p>Caminá lentamente por la habitación</p>
-      <div class="progress-bar">
-        <div id="roomwalk-progress" class="progress-fill"></div>
-      </div>
-      <p class="roomwalk-counter" id="roomwalk-counter">Mediciones: 0/15</p>
-      <button id="btn-roomwalk-stop" class="btn-stop" style="width: 100%;">
-        Detener
-      </button>
-    </div>
   </div>
 
 </body>

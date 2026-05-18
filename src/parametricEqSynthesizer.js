@@ -101,9 +101,9 @@ export function synthesizeBands(candidates, targetFrequencies, options = {}) {
 
 /**
  * Merge bands only when they are very close and same-polarity:
- * - proximity: within 1/2 octave
+ * - proximity: within 1/3 octave
  * - polarity: both cut or both boost
- * This preserves complementary peak/null bands that may coexist nearby.
+ * This preserves nearby-but-distinct corrections instead of collapsing them too early.
  */
 function mergeBandsWithinOctave(bands) {
   if (bands.length <= 1) return bands;
@@ -116,8 +116,8 @@ function mergeBandsWithinOctave(bands) {
     const curr = sorted[i];
 
     const samePolarity = Math.sign(curr.gain) === Math.sign(prev.gain);
-    // Check if within 1/2 octave: curr.freq / prev.freq <= sqrt(2)
-    if (samePolarity && (curr.freq / prev.freq <= Math.SQRT2)) {
+    // Check if within 1/3 octave: curr.freq / prev.freq <= 2^(1/3)
+    if (samePolarity && (curr.freq / prev.freq <= Math.cbrt(2))) {
       // Keep the one with higher |gain|
       if (Math.abs(curr.gain) > Math.abs(prev.gain)) {
         result[result.length - 1] = curr;
