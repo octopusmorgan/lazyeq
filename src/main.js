@@ -507,14 +507,27 @@ function renderLiveCalibration(timestamp, final = false) {
   const canvas = canvasLive;
   if (!canvas) return;
 
-  const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  const width = rect.width;
-  const height = rect.height;
+  const cssW = Math.max(1, Math.round(rect.width));
+  const cssH = Math.max(1, Math.round(rect.height));
+  const bufW = Math.floor(cssW * dpr);
+  const bufH = Math.floor(cssH * dpr);
+
+  // Sync canvas buffer to CSS dimensions every frame.
+  // Ensures rendering is never clipped, regardless of whether
+  // resizeCanvases() or ResizeObserver have fired yet.
+  if (canvas.width !== bufW || canvas.height !== bufH) {
+    canvas.width = bufW;
+    canvas.height = bufH;
+  }
+
+  const ctx = canvas.getContext("2d");
+  const width = cssW;
+  const height = cssH;
 
   // Clear
-  ctx.clearRect(0, 0, width * dpr, height * dpr);
+  ctx.clearRect(0, 0, bufW, bufH);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.scale(dpr, dpr);
 
