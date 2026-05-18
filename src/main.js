@@ -184,12 +184,8 @@ micSelect.addEventListener("change", () => {
 
 // ─── Analyzer Initialization ─────────────────────────────────────────
 
-async function initAnalyzer(ctx) {
-  await analyzer.init(selectedMicDeviceId, ctx);
-  if (import.meta.env.DEV) console.log("[Analyzer] Using LOCAL mic:", selectedMicDeviceId);
-  // Permission granted — refresh device list to get proper labels
-  await loadDevices();
-}
+// initAnalyzer removed — was passing ephemeral deviceId before permission grant.
+// Use the getUserMedia→analyzer.init(stream, ctx) pattern instead (see calibrate & legacy sweep handlers).
 
 
 // Populate EQ table
@@ -877,7 +873,13 @@ if (btnLegacySweep) {
 
       const ctx = initAudioContext();
       if (!analyzer) analyzer = new SpectrumAnalyzer();
-      await initAnalyzer(ctx);
+
+      // Obtain mic stream with generic constraint (no deviceId) to avoid
+      // ephemeral-ID issue: IDs from enumerateDevices() before permission
+      // grant become invalid after getUserMedia() is called.
+      const localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      await loadDevices();
+      await analyzer.init(localMicStream, ctx);
 
       // Capture noise floor if not already done
       if (!analyzer.noiseBuffer) {

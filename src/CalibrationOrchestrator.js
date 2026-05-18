@@ -165,7 +165,7 @@ export class CalibrationOrchestrator {
    * Idempotent if already running.
    *
    * The caller (main.js) should:
-   *   - Call initAnalyzer() BEFORE start()
+   *   - Call getUserMedia()+analyzer.init(stream,ctx) BEFORE start()
    *   - Call computeTargetCurveCache() BEFORE start()
    *   - Start animationFrame AFTER start() resolves
    *   - Handle UI toggles (button visibility)
