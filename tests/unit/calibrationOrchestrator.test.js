@@ -529,4 +529,157 @@ describe('CalibrationOrchestrator — Commit 2 (+_onMeasurement)', () => {
       assert.ok(msg.includes('stopped early'));
     });
   });
+
+  // ── _applySaturationDetection — Legacy 8-band saturation ─────────────────
+
+  describe('_applySaturationDetection — Legacy 8-band saturation', () => {
+    let inst;
+    const BAND_500HZ = 3;         // index of 500 Hz in _ACTIVE_EQ_FREQS ([63,125,250,500,...])
+    const BIN_500HZ = 23;         // Math.round(500 / (44100 / 2048))
+    const FFT_BINS = 1024;        // fftSize / 2
+
+    function makeCorrected(val500) {
+      const arr = new Float32Array(FFT_BINS).fill(-120);
+      arr[BIN_500HZ] = val500;
+      return arr;
+    }
+
+    function makeDeltaGains(gain500) {
+      const arr = new Float32Array(8);
+      arr[BAND_500HZ] = gain500;
+      return arr;
+    }
+
+    function initSaturationState() {
+      inst._perBandMaxGain = new Float32Array(8).fill(6);
+      inst._perBandMaxCut = new Float32Array(8).fill(-6);
+      inst._perBandSaturationCount = new Uint8Array(8);
+      inst._prevBandCorrected = new Float32Array(8).fill(-120);
+    }
+
+    test('1. No saturation when actual matches expected', () => {
+      inst = createInst(buildMinimalDeps());
+      inst._deps.analyzer.audioContext = { sampleRate: 44100 };
+      inst._deps.analyzer.analyserNode = { fftSize: 2048 };
+      initSaturationState();
+
+      const corrected = makeCorrected(-7);   // currResp at 500 Hz
+      const deltaGains = makeDeltaGains(3);  // expected = +3
+      inst._prevBandCorrected[BAND_500HZ] = -10; // prev = -10 → actual = +3
+
+      inst._applySaturationDetection(corrected, deltaGains);
+
+      // |expected| = 3 > 1.0, |actual| = 3, threshold = 3*0.35 = 1.05
+      // 3 < 1.05 → false → no saturation
+      assert.equal(inst._perBandSaturationCount[BAND_500HZ], 0);
+      assert.equal(inst._perBandMaxGain[BAND_500HZ], 6);
+      assert.equal(inst._prevBandCorrected[BAND_500HZ], -7);
+    });
+
+    test('2. Saturation detected when actual << expected', () => {
+      inst = createInst(buildMinimalDeps());
+      inst._deps.analyzer.audioContext = { sampleRate: 44100 };
+      inst._deps.analyzer.analyserNode = { fftSize: 2048 };
+      initSaturationState();
+
+      const corrected = makeCorrected(-9.5);  // currResp at 500 Hz
+      const deltaGains = makeDeltaGains(4);   // expected = +4
+      inst._prevBandCorrected[BAND_500HZ] = -10; // prev = -10 → actual = +0.5
+
+      inst._applySaturationDetection(corrected, deltaGains);
+
+      // |expected| = 4 > 1.0, |actual| = 0.5, threshold = 4*0.35 = 1.4
+      // 0.5 < 1.4 → saturation → counter = 1
+      assert.equal(inst._perBandSaturationCount[BAND_500HZ], 1);
+      assert.equal(inst._perBandMaxGain[BAND_500HZ], 6); // still 6 (not enough)
+      assert.equal(inst._prevBandCorrected[BAND_500HZ], -9.5);
+    });
+
+    test('3. Counter accumulation triggers gain limit reduction', () => {
+      inst = createInst(buildMinimalDeps());
+      inst._deps.analyzer.audioContext = { sampleRate: 44100 };
+      inst._deps.analyzer.analyserNode = { fftSize: 2048 };
+      initSaturationState();
+
+      const deltaGains = makeDeltaGains(4);
+
+      // Call 1: expected = +4, prev = -10, curr = -9.5 → actual = +0.5
+      let corrected = makeCorrected(-9.5);
+      inst._prevBandCorrected[BAND_500HZ] = -10;
+      inst._applySaturationDetection(corrected, deltaGains);
+      assert.equal(inst._perBandSaturationCount[BAND_500HZ], 1);
+
+      // Call 2: prev is now -9.5, curr still -9.5 → actual = 0 (even worse)
+      corrected = makeCorrected(-9.5);
+      inst._applySaturationDetection(corrected, deltaGains);
+
+      assert.equal(inst._perBandMaxGain[BAND_500HZ], 4.5); // 6 * 0.75
+      assert.equal(inst._perBandSaturationCount[BAND_500HZ], 0); // reset
+    });
+
+    test('4. Counter resets on non-saturation', () => {
+      inst = createInst(buildMinimalDeps());
+      inst._deps.analyzer.audioContext = { sampleRate: 44100 };
+      inst._deps.analyzer.analyserNode = { fftSize: 2048 };
+      initSaturationState();
+
+      // Call 1: saturate — expected = +4, prev = -10, curr = -9.5 → actual = +0.5
+      let corrected = makeCorrected(-9.5);
+      let deltaGains = makeDeltaGains(4);
+      inst._prevBandCorrected[BAND_500HZ] = -10;
+      inst._applySaturationDetection(corrected, deltaGains);
+      assert.equal(inst._perBandSaturationCount[BAND_500HZ], 1);
+
+      // Call 2: valid — expected = +3, prev is -9.5, curr = -6.5 → actual = +3
+      corrected = makeCorrected(-6.5);
+      deltaGains = makeDeltaGains(3);
+      inst._applySaturationDetection(corrected, deltaGains);
+
+      // |expected| = 3 > 1.0, |actual| = 3, threshold = 3*0.35 = 1.05
+      // 3 < 1.05 → false → no saturation → reset
+      assert.equal(inst._perBandSaturationCount[BAND_500HZ], 0);
+      assert.equal(inst._perBandMaxGain[BAND_500HZ], 6);
+    });
+
+    test('5. Cut path saturation reduces perBandMaxCut', () => {
+      inst = createInst(buildMinimalDeps());
+      inst._deps.analyzer.audioContext = { sampleRate: 44100 };
+      inst._deps.analyzer.analyserNode = { fftSize: 2048 };
+      initSaturationState();
+
+      const deltaGains = makeDeltaGains(-3); // cut path
+      inst._prevBandCorrected[BAND_500HZ] = -10;
+
+      // Call 1: expected = -3, prev = -10, curr = -10.5 → actual = -0.5
+      let corrected = makeCorrected(-10.5);
+      inst._applySaturationDetection(corrected, deltaGains);
+      assert.equal(inst._perBandSaturationCount[BAND_500HZ], 1);
+
+      // Call 2: prev is -10.5, curr stays -10.5 → actual = 0
+      corrected = makeCorrected(-10.5);
+      inst._applySaturationDetection(corrected, deltaGains);
+
+      // |expected| > 1.0, expected < 0 → perBandMaxCut path
+      // Math.min(-1.0, -6 * 0.75) = Math.min(-1.0, -4.5) = -4.5
+      assert.equal(inst._perBandMaxCut[BAND_500HZ], -4.5);
+      assert.equal(inst._perBandSaturationCount[BAND_500HZ], 0);
+    });
+
+    test('6. No saturation below 1.0 dB threshold', () => {
+      inst = createInst(buildMinimalDeps());
+      inst._deps.analyzer.audioContext = { sampleRate: 44100 };
+      inst._deps.analyzer.analyserNode = { fftSize: 2048 };
+      initSaturationState();
+
+      const corrected = makeCorrected(-9.5);   // actual = +0.5
+      const deltaGains = makeDeltaGains(0.8);  // |expected| = 0.8 < 1.0
+      inst._prevBandCorrected[BAND_500HZ] = -10;
+
+      inst._applySaturationDetection(corrected, deltaGains);
+
+      // |expected| = 0.8 < 1.0 → condition false → no saturation
+      assert.equal(inst._perBandSaturationCount[BAND_500HZ], 0);
+      assert.equal(inst._perBandMaxGain[BAND_500HZ], 6);
+    });
+  });
 });
