@@ -136,13 +136,18 @@ describe('T013: Legacy Sweep Path Regression', () => {
       );
 
       assert.ok(
-        content.includes('function startLiveCalibration()'),
-        'startLiveCalibration should exist in main.js'
+        content.includes('CalibrationOrchestrator'),
+        'CalibrationOrchestrator should be imported in main.js'
       );
 
       assert.ok(
-        content.includes('function stopCalibration('),
-        'stopCalibration should exist in main.js'
+        content.includes('function createOrchestrator'),
+        'createOrchestrator should exist in main.js'
+      );
+
+      assert.ok(
+        content.includes('function showResults('),
+        'showResults should exist in main.js (DOM rendering)'
       );
     });
 
